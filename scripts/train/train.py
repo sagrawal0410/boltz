@@ -19,6 +19,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
 
 from boltz.data.module.training import BoltzTrainingDataModule, DataConfig
+from boltz.model.utils.components import freeze_components
 
 
 @dataclass
@@ -57,6 +58,13 @@ class TrainConfig:
         Fail on mismatched checkpoint weights.
     load_confidence_from_trunk: Optional[bool]
         Load pre-trained confidence weights from trunk.
+    freeze_trunk: bool
+        Freeze all trunk parameters.
+    freeze_confidence: bool
+        Freeze all confidence head parameters.
+    train_denoiser_only: bool
+        Convenience flag to freeze trunk/confidence and zero non-diffusion losses.
+        Load pre-trained confidence weights from trunk.
 
     """
 
@@ -75,6 +83,9 @@ class TrainConfig:
     debug: bool = False
     strict_loading: bool = True
     load_confidence_from_trunk: Optional[bool] = False
+    freeze_trunk: bool = False
+    freeze_confidence: bool = False
+    train_denoiser_only: bool = False
 
 
 def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR0915
@@ -164,6 +175,22 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
 
         if cfg.load_confidence_from_trunk:
             os.remove(file_path)
+
+    components_to_freeze = set()
+    if cfg.freeze_trunk or cfg.train_denoiser_only:
+        components_to_freeze.add("trunk")
+    if cfg.freeze_confidence or cfg.train_denoiser_only:
+        components_to_freeze.add("confidence")
+    if components_to_freeze:
+        freeze_components(model_module, components_to_freeze)
+
+    if cfg.train_denoiser_only:
+        if hasattr(model_module.training_args, "confidence_loss_weight"):
+            model_module.training_args.confidence_loss_weight = 0.0
+        if hasattr(model_module.training_args, "distogram_loss_weight"):
+            model_module.training_args.distogram_loss_weight = 0.0
+        if hasattr(model_module.training_args, "bfactor_loss_weight"):
+            model_module.training_args.bfactor_loss_weight = 0.0
 
     # Create checkpoint callback
     callbacks = []
