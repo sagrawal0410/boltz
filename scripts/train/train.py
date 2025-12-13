@@ -86,6 +86,7 @@ class TrainConfig:
     freeze_trunk: bool = False
     freeze_confidence: bool = False
     train_denoiser_only: bool = False
+    init_denoiser_randomly: bool = True
 
 
 def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR0915
@@ -142,9 +143,8 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
         # Load the pretrained weights into the confidence module
         if cfg.load_confidence_from_trunk:
             checkpoint = torch.load(cfg.pretrained, map_location="cpu")
-
-            # Modify parameter names in the state_dict
             new_state_dict = {}
+            # Modify parameter names in the state_dict
             for key, value in checkpoint["state_dict"].items():
                 if not key.startswith("structure_module") and not key.startswith(
                     "distogram_module"
@@ -169,9 +169,48 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
             file_path = cfg.pretrained
 
         print(f"Loading model from {file_path}")
-        model_module = type(model_module).load_from_checkpoint(
-            file_path, map_location="cpu", strict=False, **(model_module.hparams)
-        )
+        if cfg.init_denoiser_randomly:
+            checkpoint = torch.load(file_path, map_location="cpu")
+            filtered_state_dict = {}
+            from boltz.model.utils.components import infer_component
+            import torch.nn.init as init
+            for key, value in checkpoint["state_dict"].items():
+                component = infer_component(key)
+                if component not in ["denoiser"]:
+                    filtered_state_dict[key] = value
+                        
+            modified_checkpoint = {k: v for k, v in checkpoint.items() if k!= "state_dict"}
+            modified_checkpoint["state_dict"] = filtered_state_dict
+            temp_checkpoint_path = file_path + ".filtered"
+            torch.save(modified_checkpoint, temp_checkpoint_path)
+            model_module = type(model_module).load_from_checkpoint(temp_checkpoint_path, map_location = "cpu", strict=False, **(model_module.hparams))
+            #missing_keys, unexpected_keys = model_module.load_state_dict(filtered_state_dict, strict=False)
+            os.remove(temp_checkpoint_path)
+            print(f"Loaded trunk/confidence weights. Denoiser will be randomly initialized.")
+            #print(f"Missing keys (denoiser, expected): {len([k for k in missing_keys if infer_component(k) == 'denoiser'])}")
+            
+            for name, param in model_module.named_parameters():
+                component = infer_component(name)
+                if component == "denoiser":
+                    if (len(param.shape) >= 2):
+                        init.xavier_uniform_(param)
+                    elif (len(param.shape) == 1):
+                        init.zeros_(param)
+                    print(f"Re-initialized denoiser parameter: {name} (shape: {param.shape})")
+
+            denoiser_count = 0
+            for name, param in model_module.named_parameters():
+                component = infer_component(name)
+                if component == "denoiser":
+                    denoiser_count += 1
+            print(f"Denoiser parameters initialized: {denoiser_count}")
+
+        else:
+            # Normal loading (all weights)
+            model_module = type(model_module).load_from_checkpoint(
+                file_path, map_location="cpu", strict=False, **(model_module.hparams)
+            )
+
 
         if cfg.load_confidence_from_trunk:
             os.remove(file_path)

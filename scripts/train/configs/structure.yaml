@@ -12,8 +12,8 @@ trainer:
 #   project: boltz
 #   entity: boltz
 
-output: SET_PATH_HERE
-pretrained: PATH_TO_CHECKPOINT_FILE
+output: /data/scratch-oc40/shaurya10/boltz/checkpoints
+pretrained: /data/scratch-oc40/shaurya10/boltz2_conf.ckpt
 resume: null
 disable_checkpoint: false
 matmul_precision: null
@@ -86,6 +86,7 @@ data:
   num_bins: 64
   atoms_per_window_queries: 32
   compute_constraint_features: false
+  init_denoiser_randomly: bool = True
 
 model:
   _target_: boltz.model.model.Boltz1
