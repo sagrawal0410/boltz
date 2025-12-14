@@ -13,7 +13,7 @@ trainer:
 #   entity: boltz
 
 output: /data/scratch-oc40/shaurya10/boltz/checkpoints
-pretrained: /data/scratch-oc40/shaurya10/boltz2_conf.ckpt
+pretrained: /data/scratch-oc40/shaurya10/boltz1_conf.ckpt
 resume: null
 disable_checkpoint: false
 matmul_precision: null
@@ -89,7 +89,7 @@ data:
   init_denoiser_randomly: bool = True
 
 model:
-  _target_: boltz.model.model.Boltz1
+  _target_: boltz.model.models.boltz1.Boltz1
   atom_s: 128
   atom_z: 16
   token_s: 384
