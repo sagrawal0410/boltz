@@ -7,10 +7,10 @@ trainer:
   accumulate_grad_batches: 128    # to adjust depending on the number of devices
 
 # Optional set wandb here
-# wandb:
-#   name: boltz
-#   project: boltz
-#   entity: boltz
+wandb:
+   name: boltz
+   project: boltz
+   entity: boltz
 
 output: /data/scratch-oc40/shaurya10/boltz/checkpoints
 pretrained: /data/scratch-oc40/shaurya10/boltz1_conf.ckpt
@@ -62,7 +62,7 @@ data:
   featurizer:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
-  symmetries: PATH_TO_SYMMETRY_FILE
+  symmetries: /data/scratch-oc40/shaurya10/boltz/empty_symmetries.pkl
   max_tokens: 512
   max_atoms: 4608
   max_seqs: 2048
