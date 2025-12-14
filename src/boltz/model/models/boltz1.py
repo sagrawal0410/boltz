@@ -192,7 +192,13 @@ class Boltz1(LightningModule):
                 s_input_dim=s_input_dim,
                 **msa_args,
             )
+            # Freeze MSA module - only train denoiser
+            for param in self.msa_module.parameters():
+                param.requires_grad = False
         self.pairformer_module = PairformerModule(token_s, token_z, **pairformer_args)
+        # Freeze pairformer module - only train denoiser
+        for param in self.pairformer_module.parameters():
+            param.requires_grad = False
         if compile_pairformer:
             # Big models hit the default cache limit (8)
             self.is_pairformer_compiled = True
@@ -346,12 +352,16 @@ class Boltz1(LightningModule):
                 "z": z,
             }
 
+        # Detach MSA and pairformer outputs to stop gradients - only train denoiser
+        s_trunk_detached = s.detach()
+        z_trunk_detached = z.detach()
+
         # Compute structure module
         if self.training and self.structure_prediction_training:
             dict_out.update(
                 self.structure_module(
-                    s_trunk=s,
-                    z_trunk=z,
+                    s_trunk=s_trunk_detached,
+                    z_trunk=z_trunk_detached,
                     s_inputs=s_inputs,
                     feats=feats,
                     relative_position_encoding=relative_position_encoding,
@@ -362,8 +372,8 @@ class Boltz1(LightningModule):
         if (not self.training) or self.confidence_prediction:
             dict_out.update(
                 self.structure_module.sample(
-                    s_trunk=s,
-                    z_trunk=z,
+                    s_trunk=s_trunk_detached,
+                    z_trunk=z_trunk_detached,
                     s_inputs=s_inputs,
                     feats=feats,
                     relative_position_encoding=relative_position_encoding,
