@@ -1,7 +1,7 @@
 trainer:
   accelerator: gpu
   devices: 1
-  precision: 32
+  precision: bf16-mixed
   gradient_clip_val: 10.0
   max_epochs: -1
   accumulate_grad_batches: 128    # to adjust depending on the number of devices
@@ -155,7 +155,7 @@ model:
   training_args:
     recycling_steps: 3
     sampling_steps: 20
-    diffusion_multiplicity: 16
+    diffusion_multiplicity: 4
     diffusion_samples: 2
     confidence_loss_weight: 1e-4
     diffusion_loss_weight: 4.0
