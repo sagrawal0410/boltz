@@ -4,7 +4,7 @@ trainer:
   precision: bf16-mixed
   gradient_clip_val: 10.0
   max_epochs: -1
-  accumulate_grad_batches: 128    # to adjust depending on the number of devices
+  accumulate_grad_batches: 256    # to adjust depending on the number of devices
 
 # Optional set wandb here
 wandb:
@@ -63,8 +63,8 @@ data:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
   symmetries: /data/scratch-oc40/shaurya10/boltz/empty_symmetries.pkl
-  max_tokens: 512
-  max_atoms: 4608
+  max_tokens: 384
+  max_atoms: 3072
   max_seqs: 2048
   pad_to_max_tokens: true
   pad_to_max_atoms: true
