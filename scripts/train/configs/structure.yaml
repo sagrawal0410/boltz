@@ -21,6 +21,7 @@ save_top_k: -1
 freeze_trunk: true           # freeze trunk weights when fine-tuning denoiser
 freeze_confidence: true      # freeze confidence head weights
 train_denoiser_only: true    # zero non-diffusion losses
+init_denoiser_randomly: true # initialize denoiser weights randomly (don't load from checkpoint)
 
 data:
   datasets:
@@ -86,7 +87,6 @@ data:
   num_bins: 64
   atoms_per_window_queries: 32
   compute_constraint_features: false
-  init_denoiser_randomly: bool = True
 
 model:
   _target_: boltz.model.models.boltz1.Boltz1
