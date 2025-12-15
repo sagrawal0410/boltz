@@ -527,7 +527,25 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
             # Split records if given
             if data_config.split is not None:
-                with Path(data_config.split).open("r") as f:
+                split_path = Path(data_config.split)
+                # Resolve relative paths relative to repository root
+                # This handles cases where the script is run from a different directory
+                if not split_path.is_absolute():
+                    # Remove leading ./ if present
+                    split_str = str(split_path).lstrip("./")
+                    # This file is at: src/boltz/data/module/training.py
+                    # Repo root is 5 levels up (module -> data -> boltz -> src -> repo_root)
+                    repo_root = Path(__file__).parent.parent.parent.parent.parent
+                    potential_path = (repo_root / split_str).resolve()
+                    if potential_path.exists():
+                        split_path = potential_path
+                    elif split_path.exists():
+                        # Fallback: use as-is if it exists relative to cwd
+                        split_path = split_path.resolve()
+                    else:
+                        # Last resort: try repo root with original path
+                        split_path = (repo_root / split_path).resolve()
+                with split_path.open("r") as f:
                     split = {x.lower() for x in f.read().splitlines()}
 
                 train_records = []
