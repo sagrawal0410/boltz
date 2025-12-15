@@ -179,13 +179,15 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
                 if component not in ["denoiser"]:
                     filtered_state_dict[key] = value
                         
-            modified_checkpoint = {k: v for k, v in checkpoint.items() if k!= "state_dict"}
-            modified_checkpoint["state_dict"] = filtered_state_dict
-            temp_checkpoint_path = file_path + ".filtered"
-            torch.save(modified_checkpoint, temp_checkpoint_path)
-            model_module = type(model_module).load_from_checkpoint(temp_checkpoint_path, map_location = "cpu", strict=False, **(model_module.hparams))
-            #missing_keys, unexpected_keys = model_module.load_state_dict(filtered_state_dict, strict=False)
-            os.remove(temp_checkpoint_path)
+            model_module = type(model_module).load_from_checkpoint(
+                file_path, map_location="cpu", strict=False, **(model_module.hparams)
+            )
+            
+            # Then load only the filtered state_dict (excluding denoiser)
+            # This will skip denoiser weights, leaving them randomly initialized
+            missing_keys, unexpected_keys = model_module.load_state_dict(
+                filtered_state_dict, strict=False
+            )
             print(f"Loaded trunk/confidence weights. Denoiser will be randomly initialized.")
             #print(f"Missing keys (denoiser, expected): {len([k for k in missing_keys if infer_component(k) == 'denoiser'])}")
             
