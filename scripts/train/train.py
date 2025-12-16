@@ -13,6 +13,7 @@ import torch
 import torch.multiprocessing
 from omegaconf import OmegaConf, listconfig
 from pytorch_lightning import LightningModule
+import wandb as wandb_module
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
@@ -256,7 +257,7 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
             project=wandb["project"],
             entity=wandb["entity"],
             log_model=False,
-            settings=wandb.Settings(start_method="fork"),
+            settings=wandb_module.Settings(start_method="fork"),
         )
         loggers.append(wdb_logger)
         # Save the config to wandb
