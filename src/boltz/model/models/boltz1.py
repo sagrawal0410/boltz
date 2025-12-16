@@ -550,63 +550,30 @@ class Boltz1(LightningModule):
         return loss
 
     def training_log(self):
-        self.log("train/grad_norm", self.gradient_norm(self), prog_bar=False, sync_dist=True)
-        self.log("train/param_norm", self.parameter_norm(self), prog_bar=False, sync_dist=True)
+        def _log_norm(name, norm_val):
+            """Helper to convert tensor norms to scalars before logging."""
+            if torch.is_tensor(norm_val):
+                norm_val = norm_val.item()
+            self.log(name, norm_val, prog_bar=False, sync_dist=False)
+
+        _log_norm("train/grad_norm", self.gradient_norm(self))
+        _log_norm("train/param_norm", self.parameter_norm(self))
 
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("lr", lr, prog_bar=False, sync_dist=True)
+        self.log("lr", lr, prog_bar=False, sync_dist=False)
 
-        self.log(
-            "train/grad_norm_msa_module",
-            self.gradient_norm(self.msa_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
-        self.log(
-            "train/param_norm_msa_module",
-            self.parameter_norm(self.msa_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_msa_module", self.gradient_norm(self.msa_module))
+        _log_norm("train/param_norm_msa_module", self.parameter_norm(self.msa_module))
 
-        self.log(
-            "train/grad_norm_pairformer_module",
-            self.gradient_norm(self.pairformer_module),
-            prog_bar=False,
-        )
-        self.log(
-            "train/param_norm_pairformer_module",
-            self.parameter_norm(self.pairformer_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_pairformer_module", self.gradient_norm(self.pairformer_module))
+        _log_norm("train/param_norm_pairformer_module", self.parameter_norm(self.pairformer_module))
 
-        self.log(
-            "train/grad_norm_structure_module",
-            self.gradient_norm(self.structure_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
-        self.log(
-            "train/param_norm_structure_module",
-            self.parameter_norm(self.structure_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_structure_module", self.gradient_norm(self.structure_module))
+        _log_norm("train/param_norm_structure_module", self.parameter_norm(self.structure_module))
 
         if self.confidence_prediction:
-            self.log(
-                "train/grad_norm_confidence_module",
-                self.gradient_norm(self.confidence_module),
-                prog_bar=False,
-                sync_dist=True,
-            )
-            self.log(
-                "train/param_norm_confidence_module",
-                self.parameter_norm(self.confidence_module),
-                prog_bar=False,
-                sync_dist=True,
-            )
+            _log_norm("train/grad_norm_confidence_module", self.gradient_norm(self.confidence_module))
+            _log_norm("train/param_norm_confidence_module", self.parameter_norm(self.confidence_module))
 
     def on_train_epoch_end(self):
         self.log(
@@ -615,10 +582,10 @@ class Boltz1(LightningModule):
             prog_bar=False,
             on_step=True,
             on_epoch=True,
-            sync_dist=True,
+            sync_dist=False,
         )
         for k, v in self.train_confidence_loss_dict_logger.items():
-            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True, sync_dist=True)
+            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True, sync_dist=False)
 
     def gradient_norm(self, module) -> float:
         # Only compute over parameters that are being trained
