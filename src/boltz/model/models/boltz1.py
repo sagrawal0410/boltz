@@ -493,7 +493,8 @@ class Boltz1(LightningModule):
                 )
             except Exception as e:
                 print(f"Skipping batch {batch_idx} due to error: {e}")
-                return None
+                disto_loss = torch.tensor(0.0, device=batch["token_index"].device)
+                diffusion_loss_dict = {"loss": torch.tensor(0.0, device=batch["token_index"].device), "loss_breakdown": {}}
 
         else:
             disto_loss = 0.0
@@ -528,6 +529,11 @@ class Boltz1(LightningModule):
             + self.training_args.diffusion_loss_weight * diffusion_loss_dict["loss"]
             + self.training_args.distogram_loss_weight * disto_loss
         )
+        if not torch.is_tensor(loss):
+            device = batch["token_index"].device
+            loss = torch.tensor(loss, device=device, requires_grad=True)
+        elif loss.device.type == "cpu":
+            loss = loss.to(batch["token_index"].device)
         # Log losses
         self.log("train/distogram_loss", disto_loss, sync_dist=True)
         self.log("train/diffusion_loss", diffusion_loss_dict["loss"], sync_dist=True)
