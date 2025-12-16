@@ -534,10 +534,26 @@ class Boltz1(LightningModule):
             loss = torch.tensor(loss, device=device, requires_grad=True)
         elif loss.device.type == "cpu":
             loss = loss.to(batch["token_index"].device)
-        # Log losses
+        # Log losses - ensure all values are GPU tensors for sync_dist
+        device = batch["token_index"].device
+        if not torch.is_tensor(disto_loss):
+            disto_loss = torch.tensor(disto_loss, device=device)
+        elif disto_loss.device.type == "cpu":
+            disto_loss = disto_loss.to(device)
         self.log("train/distogram_loss", disto_loss, sync_dist=True)
-        self.log("train/diffusion_loss", diffusion_loss_dict["loss"], sync_dist=True)
+        
+        diffusion_loss_val = diffusion_loss_dict["loss"]
+        if not torch.is_tensor(diffusion_loss_val):
+            diffusion_loss_val = torch.tensor(diffusion_loss_val, device=device)
+        elif diffusion_loss_val.device.type == "cpu":
+            diffusion_loss_val = diffusion_loss_val.to(device)
+        self.log("train/diffusion_loss", diffusion_loss_val, sync_dist=True)
+        
         for k, v in diffusion_loss_dict["loss_breakdown"].items():
+            if not torch.is_tensor(v):
+                v = torch.tensor(v, device=device)
+            elif v.device.type == "cpu":
+                v = v.to(device)
             self.log(f"train/{k}", v, sync_dist=True)
 
         if self.confidence_prediction:
@@ -1080,87 +1096,105 @@ class Boltz1(LightningModule):
         overall_disto_lddt = sum(
             avg_disto_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
-        self.log("val/disto_lddt", overall_disto_lddt, prog_bar=True, sync_dist=True)
+        # Convert to scalar to avoid sync_dist issues
+        overall_disto_lddt = float(overall_disto_lddt)
+        self.log("val/disto_lddt", overall_disto_lddt, prog_bar=True, sync_dist=False)
 
         overall_lddt = sum(
             avg_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
-        self.log("val/lddt", overall_lddt, prog_bar=True, sync_dist=True)
+        # Convert to scalar to avoid sync_dist issues
+        overall_lddt = float(overall_lddt)
+        self.log("val/lddt", overall_lddt, prog_bar=True, sync_dist=False)
 
         overall_complex_lddt = sum(
             avg_complex_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
+        # Convert to scalar to avoid sync_dist issues
+        overall_complex_lddt = float(overall_complex_lddt)
         self.log(
-            "val/complex_lddt", overall_complex_lddt, prog_bar=True, sync_dist=True
+            "val/complex_lddt", overall_complex_lddt, prog_bar=True, sync_dist=False
         )
 
         if self.confidence_prediction:
             overall_top1_lddt = sum(
                 avg_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            self.log("val/top1_lddt", overall_top1_lddt, prog_bar=True, sync_dist=True)
+            overall_top1_lddt = float(overall_top1_lddt)
+            self.log("val/top1_lddt", overall_top1_lddt, prog_bar=True, sync_dist=False)
 
             overall_iplddt_top1_lddt = sum(
                 avg_iplddt_top1_lddt[m] * w
                 for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
+            overall_iplddt_top1_lddt = float(overall_iplddt_top1_lddt)
             self.log(
                 "val/iplddt_top1_lddt",
                 overall_iplddt_top1_lddt,
                 prog_bar=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             overall_pde_top1_lddt = sum(
                 avg_pde_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
+            overall_pde_top1_lddt = float(overall_pde_top1_lddt)
             self.log(
                 "val/pde_top1_lddt",
                 overall_pde_top1_lddt,
                 prog_bar=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             overall_ipde_top1_lddt = sum(
                 avg_ipde_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
+            overall_ipde_top1_lddt = float(overall_ipde_top1_lddt)
             self.log(
                 "val/ipde_top1_lddt",
                 overall_ipde_top1_lddt,
                 prog_bar=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             overall_ptm_top1_lddt = sum(
                 avg_ptm_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
+            overall_ptm_top1_lddt = float(overall_ptm_top1_lddt)
             self.log(
                 "val/ptm_top1_lddt",
                 overall_ptm_top1_lddt,
                 prog_bar=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             overall_iptm_top1_lddt = sum(
                 avg_iptm_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
+            overall_iptm_top1_lddt = float(overall_iptm_top1_lddt)
             self.log(
                 "val/iptm_top1_lddt",
                 overall_iptm_top1_lddt,
                 prog_bar=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             overall_avg_lddt = sum(
                 avg_avg_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            self.log("val/avg_lddt", overall_avg_lddt, prog_bar=True, sync_dist=True)
+            overall_avg_lddt = float(overall_avg_lddt)
+            self.log("val/avg_lddt", overall_avg_lddt, prog_bar=True, sync_dist=False)
 
-        self.log("val/rmsd", self.rmsd.compute(), prog_bar=True, sync_dist=True)
+        # Convert metric.compute() results to scalars to avoid sync_dist issues
+        rmsd_val = self.rmsd.compute()
+        rmsd_val = rmsd_val.item() if torch.is_tensor(rmsd_val) else float(rmsd_val)
+        self.log("val/rmsd", rmsd_val, prog_bar=True, sync_dist=False)
         self.rmsd.reset()
 
+        best_rmsd_val = self.best_rmsd.compute()
+        best_rmsd_val = best_rmsd_val.item() if torch.is_tensor(best_rmsd_val) else float(best_rmsd_val)
         self.log(
-            "val/best_rmsd", self.best_rmsd.compute(), prog_bar=True, sync_dist=True
+            "val/best_rmsd", best_rmsd_val, prog_bar=True, sync_dist=False
         )
         self.best_rmsd.reset()
 
