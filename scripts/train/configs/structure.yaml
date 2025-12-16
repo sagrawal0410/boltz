@@ -10,7 +10,7 @@ trainer:
 wandb:
    name: boltz
    project: boltz
-   entity: boltz
+   entity: mit-hair
 
 output: /data/scratch-oc40/shaurya10/boltz/checkpoints
 pretrained: /data/scratch-oc40/shaurya10/boltz1_conf.ckpt
