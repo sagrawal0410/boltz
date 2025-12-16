@@ -466,17 +466,31 @@ class Boltz1(LightningModule):
         return true_coords, rmsds, best_rmsds, true_coords_resolved_mask
 
     def training_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
+        # Proactive memory cleanup: clear cache periodically to prevent fragmentation
+        if batch_idx % 10 == 0:
+            torch.cuda.empty_cache()
+        
         # Sample recycling steps
         recycling_steps = random.randint(0, self.training_args.recycling_steps)
 
         # Compute the forward pass
-        out = self(
-            feats=batch,
-            recycling_steps=recycling_steps,
-            num_sampling_steps=self.training_args.sampling_steps,
-            multiplicity_diffusion_train=self.training_args.diffusion_multiplicity,
-            diffusion_samples=self.training_args.diffusion_samples,
-        )
+        try:
+            out = self(
+                feats=batch,
+                recycling_steps=recycling_steps,
+                num_sampling_steps=self.training_args.sampling_steps,
+                multiplicity_diffusion_train=self.training_args.diffusion_multiplicity,
+                diffusion_samples=self.training_args.diffusion_samples,
+            )
+        except RuntimeError as e:
+            error_msg = str(e)
+            if "out of memory" in error_msg.lower():
+                # Clear cache and try to free memory
+                torch.cuda.empty_cache()
+                gc.collect()
+                # Re-raise to be caught by outer exception handler
+                raise
+            raise
 
         # Compute losses
         if self.structure_prediction_training:
@@ -603,6 +617,11 @@ class Boltz1(LightningModule):
                 )
         self.log("train/loss", loss, sync_dist=True)
         self.training_log()
+        
+        # Clear cache periodically after loss computation to free memory
+        if batch_idx % 5 == 0:
+            torch.cuda.empty_cache()
+        
         return loss
 
     def training_log(self):
