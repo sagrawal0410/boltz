@@ -70,7 +70,7 @@ data:
   pad_to_max_atoms: true
   pad_to_max_seqs: true
   samples_per_epoch: 100000
-  batch_size: 2
+  batch_size: 1
   num_workers: 4
   random_seed: 42
   pin_memory: true
