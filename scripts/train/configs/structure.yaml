@@ -1,6 +1,6 @@
 trainer:
   accelerator: gpu
-  devices: 4
+  devices: 8
   precision: 32
   gradient_clip_val: 10.0
   max_epochs: -1
