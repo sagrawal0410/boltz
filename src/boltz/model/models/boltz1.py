@@ -493,8 +493,11 @@ class Boltz1(LightningModule):
                 )
             except Exception as e:
                 print(f"Skipping batch {batch_idx} due to error: {e}")
-                disto_loss = torch.tensor(0.0, device=batch["token_index"].device, requires_grad=True)
-                diffusion_loss_dict = {"loss": torch.tensor(0.0, device=batch["token_index"].device, requires_grad=True), "loss_breakdown": {}}
+                # Create zero tensors without requires_grad to avoid disconnected computation graphs
+                # They'll be handled properly in aggregation
+                device = batch["token_index"].device
+                disto_loss = torch.tensor(0.0, device=device, requires_grad=False)
+                diffusion_loss_dict = {"loss": torch.tensor(0.0, device=device, requires_grad=False), "loss_breakdown": {}}
 
         else:
             disto_loss = 0.0
@@ -523,17 +526,58 @@ class Boltz1(LightningModule):
                 "loss_breakdown": {},
             }
 
+        # Ensure all loss components are tensors on the correct device before aggregation
+        device = batch["token_index"].device
+        
+        # Convert disto_loss to tensor if needed
+        if not torch.is_tensor(disto_loss):
+            disto_loss = torch.tensor(disto_loss, device=device)
+        elif disto_loss.device != device:
+            disto_loss = disto_loss.to(device)
+        
+        # Convert diffusion_loss_dict["loss"] to tensor if needed
+        if not torch.is_tensor(diffusion_loss_dict["loss"]):
+            diffusion_loss_dict["loss"] = torch.tensor(diffusion_loss_dict["loss"], device=device)
+        elif diffusion_loss_dict["loss"].device != device:
+            diffusion_loss_dict["loss"] = diffusion_loss_dict["loss"].to(device)
+        
+        # Ensure confidence_loss_dict["loss"] is on correct device
+        if confidence_loss_dict["loss"].device != device:
+            confidence_loss_dict["loss"] = confidence_loss_dict["loss"].to(device)
+
         # Aggregate losses
         loss = (
             self.training_args.confidence_loss_weight * confidence_loss_dict["loss"]
             + self.training_args.diffusion_loss_weight * diffusion_loss_dict["loss"]
             + self.training_args.distogram_loss_weight * disto_loss
         )
+        
         # Ensure loss is a tensor with requires_grad=True for backward pass
+        # If loss has no computation graph (all components were disconnected/zero from exception),
+        # create a zero loss connected to model by multiplying with a parameter
         if not torch.is_tensor(loss):
-            loss = torch.tensor(loss, device=batch["token_index"].device, requires_grad=True)
-        elif not loss.requires_grad:
-            loss = loss.requires_grad_(True)
+            loss = torch.tensor(loss, device=device, requires_grad=True)
+        elif not loss.requires_grad or loss.grad_fn is None:
+            # If loss is disconnected (no grad_fn), connect it to model parameters
+            # This avoids memory issues from disconnected computation graphs
+            if loss.grad_fn is None:
+                # Find a parameter that requires grad to create a connected zero loss
+                connected_loss = None
+                for param in self.parameters():
+                    if param.requires_grad:
+                        # Create zero loss: 0.0 * param.sum() + loss.item()
+                        # This connects loss to the computation graph without changing its value
+                        # Use .item() to ensure we get a scalar
+                        loss_value = loss.item() if loss.numel() == 1 else 0.0
+                        connected_loss = 0.0 * param.sum() + loss_value
+                        break
+                if connected_loss is not None:
+                    loss = connected_loss
+                else:
+                    # Fallback: just set requires_grad (shouldn't happen in normal training)
+                    loss = loss.requires_grad_(True)
+            else:
+                loss = loss.requires_grad_(True)
         # Log losses
         self.log("train/distogram_loss", disto_loss, sync_dist=True)
         self.log("train/diffusion_loss", diffusion_loss_dict["loss"], sync_dist=True)
