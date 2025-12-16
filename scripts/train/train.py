@@ -256,6 +256,7 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
             project=wandb["project"],
             entity=wandb["entity"],
             log_model=False,
+            settings=wandb.Settings(start_method="fork"),
         )
         loggers.append(wdb_logger)
         # Save the config to wandb
