@@ -472,6 +472,8 @@ class AtomDiffusion(Module):
                 dtype=torch.float32,
                 device=self.device,
             )
+        if max_parallel_samples is None:
+            max_parallel_samples = multiplicity
 
         num_sampling_steps = default(num_sampling_steps, self.num_sampling_steps)
         atom_mask = atom_mask.repeat_interleave(multiplicity, 0)
