@@ -493,8 +493,7 @@ class Boltz1(LightningModule):
                 )
             except Exception as e:
                 print(f"Skipping batch {batch_idx} due to error: {e}")
-                disto_loss = torch.tensor(0.0, device=batch["token_index"].device)
-                diffusion_loss_dict = {"loss": torch.tensor(0.0, device=batch["token_index"].device), "loss_breakdown": {}}
+                return None
 
         else:
             disto_loss = 0.0
@@ -529,31 +528,10 @@ class Boltz1(LightningModule):
             + self.training_args.diffusion_loss_weight * diffusion_loss_dict["loss"]
             + self.training_args.distogram_loss_weight * disto_loss
         )
-        if not torch.is_tensor(loss):
-            device = batch["token_index"].device
-            loss = torch.tensor(loss, device=device, requires_grad=True)
-        elif loss.device.type == "cpu":
-            loss = loss.to(batch["token_index"].device)
-        # Log losses - ensure all values are GPU tensors for sync_dist
-        device = batch["token_index"].device
-        if not torch.is_tensor(disto_loss):
-            disto_loss = torch.tensor(disto_loss, device=device)
-        elif disto_loss.device.type == "cpu":
-            disto_loss = disto_loss.to(device)
+        # Log losses
         self.log("train/distogram_loss", disto_loss, sync_dist=True)
-        
-        diffusion_loss_val = diffusion_loss_dict["loss"]
-        if not torch.is_tensor(diffusion_loss_val):
-            diffusion_loss_val = torch.tensor(diffusion_loss_val, device=device)
-        elif diffusion_loss_val.device.type == "cpu":
-            diffusion_loss_val = diffusion_loss_val.to(device)
-        self.log("train/diffusion_loss", diffusion_loss_val, sync_dist=True)
-        
+        self.log("train/diffusion_loss", diffusion_loss_dict["loss"], sync_dist=True)
         for k, v in diffusion_loss_dict["loss_breakdown"].items():
-            if not torch.is_tensor(v):
-                v = torch.tensor(v, device=device)
-            elif v.device.type == "cpu":
-                v = v.to(device)
             self.log(f"train/{k}", v, sync_dist=True)
 
         if self.confidence_prediction:
@@ -572,30 +550,63 @@ class Boltz1(LightningModule):
         return loss
 
     def training_log(self):
-        def _log_norm(name, norm_val):
-            """Helper to convert tensor norms to scalars before logging."""
-            if torch.is_tensor(norm_val):
-                norm_val = norm_val.item()
-            self.log(name, norm_val, prog_bar=False, sync_dist=False)
-
-        _log_norm("train/grad_norm", self.gradient_norm(self))
-        _log_norm("train/param_norm", self.parameter_norm(self))
+        self.log("train/grad_norm", self.gradient_norm(self), prog_bar=False, sync_dist=True)
+        self.log("train/param_norm", self.parameter_norm(self), prog_bar=False, sync_dist=True)
 
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("lr", lr, prog_bar=False, sync_dist=False)
+        self.log("lr", lr, prog_bar=False, sync_dist=True)
 
-        _log_norm("train/grad_norm_msa_module", self.gradient_norm(self.msa_module))
-        _log_norm("train/param_norm_msa_module", self.parameter_norm(self.msa_module))
+        self.log(
+            "train/grad_norm_msa_module",
+            self.gradient_norm(self.msa_module),
+            prog_bar=False,
+            sync_dist=True,
+        )
+        self.log(
+            "train/param_norm_msa_module",
+            self.parameter_norm(self.msa_module),
+            prog_bar=False,
+            sync_dist=True,
+        )
 
-        _log_norm("train/grad_norm_pairformer_module", self.gradient_norm(self.pairformer_module))
-        _log_norm("train/param_norm_pairformer_module", self.parameter_norm(self.pairformer_module))
+        self.log(
+            "train/grad_norm_pairformer_module",
+            self.gradient_norm(self.pairformer_module),
+            prog_bar=False,
+        )
+        self.log(
+            "train/param_norm_pairformer_module",
+            self.parameter_norm(self.pairformer_module),
+            prog_bar=False,
+            sync_dist=True,
+        )
 
-        _log_norm("train/grad_norm_structure_module", self.gradient_norm(self.structure_module))
-        _log_norm("train/param_norm_structure_module", self.parameter_norm(self.structure_module))
+        self.log(
+            "train/grad_norm_structure_module",
+            self.gradient_norm(self.structure_module),
+            prog_bar=False,
+            sync_dist=True,
+        )
+        self.log(
+            "train/param_norm_structure_module",
+            self.parameter_norm(self.structure_module),
+            prog_bar=False,
+            sync_dist=True,
+        )
 
         if self.confidence_prediction:
-            _log_norm("train/grad_norm_confidence_module", self.gradient_norm(self.confidence_module))
-            _log_norm("train/param_norm_confidence_module", self.parameter_norm(self.confidence_module))
+            self.log(
+                "train/grad_norm_confidence_module",
+                self.gradient_norm(self.confidence_module),
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "train/param_norm_confidence_module",
+                self.parameter_norm(self.confidence_module),
+                prog_bar=False,
+                sync_dist=True,
+            )
 
     def on_train_epoch_end(self):
         self.log(
@@ -604,23 +615,28 @@ class Boltz1(LightningModule):
             prog_bar=False,
             on_step=True,
             on_epoch=True,
-            sync_dist=False,
+            sync_dist=True,
         )
         for k, v in self.train_confidence_loss_dict_logger.items():
-            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True, sync_dist=False)
+            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True, sync_dist=True)
 
     def gradient_norm(self, module) -> float:
-        # Only compute over parameters that are being trained
-        parameters = filter(lambda p: p.requires_grad, module.parameters())
-        parameters = filter(lambda p: p.grad is not None, parameters)
-        norm = torch.tensor([p.grad.norm(p=2) ** 2 for p in parameters]).sum().sqrt()
-        return norm
+        parameters = filter(lambda p: p.requires_grad and p.grad is not None, module.parameters())
+        param_list = list(parameters)
+        if len(param_list) == 0:
+            device = next(module.parameters()).device
+            return torch.tensor(0.0, device=device)
+        norms = torch.stack([p.grad.norm(p=2) ** 2 for p in param_list])
+        return norms.sum().sqrt()
 
     def parameter_norm(self, module) -> float:
-        # Only compute over parameters that are being trained
         parameters = filter(lambda p: p.requires_grad, module.parameters())
-        norm = torch.tensor([p.norm(p=2) ** 2 for p in parameters]).sum().sqrt()
-        return norm
+        param_list = list(parameters)
+        if len(param_list) == 0:
+            device = next(module.parameters()).device
+            return torch.tensor(0.0, device=device)
+        norms = torch.stack([p.norm(p=2) ** 2 for p in param_list])
+        return norms.sum().sqrt()
 
     def validation_step(self, batch: dict[str, Tensor], batch_idx: int):
         # Compute the forward pass
@@ -1096,105 +1112,87 @@ class Boltz1(LightningModule):
         overall_disto_lddt = sum(
             avg_disto_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
-        # Convert to scalar to avoid sync_dist issues
-        overall_disto_lddt = float(overall_disto_lddt)
-        self.log("val/disto_lddt", overall_disto_lddt, prog_bar=True, sync_dist=False)
+        self.log("val/disto_lddt", overall_disto_lddt, prog_bar=True, sync_dist=True)
 
         overall_lddt = sum(
             avg_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
-        # Convert to scalar to avoid sync_dist issues
-        overall_lddt = float(overall_lddt)
-        self.log("val/lddt", overall_lddt, prog_bar=True, sync_dist=False)
+        self.log("val/lddt", overall_lddt, prog_bar=True, sync_dist=True)
 
         overall_complex_lddt = sum(
             avg_complex_lddt[m] * w for (m, w) in const.out_types_weights.items()
         ) / sum(const.out_types_weights.values())
-        # Convert to scalar to avoid sync_dist issues
-        overall_complex_lddt = float(overall_complex_lddt)
         self.log(
-            "val/complex_lddt", overall_complex_lddt, prog_bar=True, sync_dist=False
+            "val/complex_lddt", overall_complex_lddt, prog_bar=True, sync_dist=True
         )
 
         if self.confidence_prediction:
             overall_top1_lddt = sum(
                 avg_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_top1_lddt = float(overall_top1_lddt)
-            self.log("val/top1_lddt", overall_top1_lddt, prog_bar=True, sync_dist=False)
+            self.log("val/top1_lddt", overall_top1_lddt, prog_bar=True, sync_dist=True)
 
             overall_iplddt_top1_lddt = sum(
                 avg_iplddt_top1_lddt[m] * w
                 for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_iplddt_top1_lddt = float(overall_iplddt_top1_lddt)
             self.log(
                 "val/iplddt_top1_lddt",
                 overall_iplddt_top1_lddt,
                 prog_bar=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             overall_pde_top1_lddt = sum(
                 avg_pde_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_pde_top1_lddt = float(overall_pde_top1_lddt)
             self.log(
                 "val/pde_top1_lddt",
                 overall_pde_top1_lddt,
                 prog_bar=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             overall_ipde_top1_lddt = sum(
                 avg_ipde_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_ipde_top1_lddt = float(overall_ipde_top1_lddt)
             self.log(
                 "val/ipde_top1_lddt",
                 overall_ipde_top1_lddt,
                 prog_bar=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             overall_ptm_top1_lddt = sum(
                 avg_ptm_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_ptm_top1_lddt = float(overall_ptm_top1_lddt)
             self.log(
                 "val/ptm_top1_lddt",
                 overall_ptm_top1_lddt,
                 prog_bar=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             overall_iptm_top1_lddt = sum(
                 avg_iptm_top1_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_iptm_top1_lddt = float(overall_iptm_top1_lddt)
             self.log(
                 "val/iptm_top1_lddt",
                 overall_iptm_top1_lddt,
                 prog_bar=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             overall_avg_lddt = sum(
                 avg_avg_lddt[m] * w for (m, w) in const.out_types_weights.items()
             ) / sum(const.out_types_weights.values())
-            overall_avg_lddt = float(overall_avg_lddt)
-            self.log("val/avg_lddt", overall_avg_lddt, prog_bar=True, sync_dist=False)
+            self.log("val/avg_lddt", overall_avg_lddt, prog_bar=True, sync_dist=True)
 
-        # Convert metric.compute() results to scalars to avoid sync_dist issues
-        rmsd_val = self.rmsd.compute()
-        rmsd_val = rmsd_val.item() if torch.is_tensor(rmsd_val) else float(rmsd_val)
-        self.log("val/rmsd", rmsd_val, prog_bar=True, sync_dist=False)
+        self.log("val/rmsd", self.rmsd.compute(), prog_bar=True, sync_dist=True)
         self.rmsd.reset()
 
-        best_rmsd_val = self.best_rmsd.compute()
-        best_rmsd_val = best_rmsd_val.item() if torch.is_tensor(best_rmsd_val) else float(best_rmsd_val)
         self.log(
-            "val/best_rmsd", best_rmsd_val, prog_bar=True, sync_dist=False
+            "val/best_rmsd", self.best_rmsd.compute(), prog_bar=True, sync_dist=True
         )
         self.best_rmsd.reset()
 
