@@ -492,7 +492,13 @@ class Boltz1(LightningModule):
                     **self.diffusion_loss_args,
                 )
             except Exception as e:
+                error_msg = str(e)
                 print(f"Skipping batch {batch_idx} due to error: {e}")
+                # Clear GPU cache if out of memory error
+                if "out of memory" in error_msg.lower() or "cuda" in error_msg.lower():
+                    import gc
+                    torch.cuda.empty_cache()
+                    gc.collect()
                 # Create zero tensors without requires_grad to avoid disconnected computation graphs
                 # They'll be handled properly in aggregation
                 device = batch["token_index"].device
