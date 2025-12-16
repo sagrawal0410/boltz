@@ -28,7 +28,7 @@ data:
     - _target_: boltz.data.module.training.DatasetConfig
       target_dir: /data/scratch-oc40/shaurya10/rcsb_processed_targets
       msa_dir: /data/scratch-oc40/shaurya10/rcsb_processed_msa
-      prob: 1.0
+      prob: 0.5
       sampler:
         _target_: boltz.data.sample.cluster.ClusterSampler
       cropper:
