@@ -693,7 +693,7 @@ class Boltz1(LightningModule):
             )
             # #region agent log
             import json
-            with open('/afs/csail.mit.edu/u/s/shaurya10/boltz/.cursor/debug.log', 'a') as f:
+            with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
                 f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "boltz1.py:693", "message": "all_lddt_dict keys after factored_lddt_loss", "data": {"keys": list(all_lddt_dict.keys()), "const_out_types": const.out_types, "has_modified_in_const": "modified" in const.out_types, "has_modified_in_dict": "modified" in all_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
             # #endregion
         except RuntimeError as e:  # catch out of memory exceptions
@@ -739,7 +739,7 @@ class Boltz1(LightningModule):
             best_complex_total_dict = all_total_dict
         # #region agent log
         import json
-        with open('/afs/csail.mit.edu/u/s/shaurya10/boltz/.cursor/debug.log', 'a') as f:
+        with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
             f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "boltz1.py:734", "message": "best_lddt_dict keys before validation loop", "data": {"best_lddt_keys": list(best_lddt_dict.keys()), "const_out_types": const.out_types, "missing_keys": [k for k in const.out_types if k not in best_lddt_dict]}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
         # #endregion
 
@@ -865,7 +865,7 @@ class Boltz1(LightningModule):
         for m in const.out_types:
             # #region agent log
             import json
-            with open('/afs/csail.mit.edu/u/s/shaurya10/boltz/.cursor/debug.log', 'a') as f:
+            with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
                 f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if 'disto_lddt_dict' in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
             # #endregion
             if m == "ligand_protein":
@@ -896,7 +896,7 @@ class Boltz1(LightningModule):
             else:
                 # #region agent log
                 import json
-                with open('/afs/csail.mit.edu/u/s/shaurya10/boltz/.cursor/debug.log', 'a') as f:
+                with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
                     f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
                 # #endregion
                 self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
