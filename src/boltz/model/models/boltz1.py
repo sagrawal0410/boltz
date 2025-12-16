@@ -866,8 +866,11 @@ class Boltz1(LightningModule):
             # #region agent log
             import json
             with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if 'disto_lddt_dict' in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if 'disto_lddt_dict' in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
             # #endregion
+            # Skip "modified" as it's not computed by factored_lddt_loss
+            if m == "modified":
+                continue
             if m == "ligand_protein":
                 if torch.any(
                     batch["pocket_feature"][
@@ -897,7 +900,7 @@ class Boltz1(LightningModule):
                 # #region agent log
                 import json
                 with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
                 # #endregion
                 self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
                 self.disto_lddt[m].update(disto_lddt_dict[m], disto_total_dict[m])
