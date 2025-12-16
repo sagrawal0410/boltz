@@ -606,7 +606,7 @@ class Boltz1(LightningModule):
             "train/confidence_loss",
             self.train_confidence_loss_logger,
             prog_bar=False,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
         )
         for k, v in self.train_confidence_loss_dict_logger.items():
