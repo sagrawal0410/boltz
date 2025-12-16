@@ -610,7 +610,7 @@ class Boltz1(LightningModule):
             on_epoch=True,
         )
         for k, v in self.train_confidence_loss_dict_logger.items():
-            self.log(f"train/{k}", v, prog_bar=False, on_step=False, on_epoch=True)
+            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True)
 
     def gradient_norm(self, module) -> float:
         # Only compute over parameters that are being trained
