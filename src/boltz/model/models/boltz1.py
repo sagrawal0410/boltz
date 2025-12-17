@@ -598,11 +598,11 @@ class Boltz1(LightningModule):
                     loss = loss.requires_grad_(True)
             else:
                 loss = loss.requires_grad_(True)
-        # Log losses
-        self.log("train/distogram_loss", disto_loss, sync_dist=True)
-        self.log("train/diffusion_loss", diffusion_loss_dict["loss"], sync_dist=True)
+        # Log losses (with on_step=True to ensure they're logged during training steps)
+        self.log("train/distogram_loss", disto_loss, on_step=True, sync_dist=True)
+        self.log("train/diffusion_loss", diffusion_loss_dict["loss"], on_step=True, sync_dist=True)
         for k, v in diffusion_loss_dict["loss_breakdown"].items():
-            self.log(f"train/{k}", v, sync_dist=True)
+            self.log(f"train/{k}", v, on_step=True, sync_dist=True)
 
         if self.confidence_prediction:
             self.train_confidence_loss_logger.update(
@@ -615,7 +615,7 @@ class Boltz1(LightningModule):
                     if torch.is_tensor(confidence_loss_dict["loss_breakdown"][k])
                     else confidence_loss_dict["loss_breakdown"][k]
                 )
-        self.log("train/loss", loss, sync_dist=True)
+        self.log("train/loss", loss, on_step=True, sync_dist=True)
         self.training_log()
         
         # Clear cache periodically after loss computation to free memory
@@ -625,63 +625,32 @@ class Boltz1(LightningModule):
         return loss
 
     def training_log(self):
-        self.log("train/grad_norm", self.gradient_norm(self), prog_bar=False, sync_dist=True)
-        self.log("train/param_norm", self.parameter_norm(self), prog_bar=False, sync_dist=True)
+        """Log training metrics, converting tensor norms to scalars."""
+        def _log_norm(name, norm_val):
+            """Helper to convert tensor norms to scalars before logging."""
+            if torch.is_tensor(norm_val):
+                norm_val = norm_val.item()
+            self.log(name, norm_val, prog_bar=False, on_step=True, sync_dist=False)
+        
+        # Add on_step=True to ensure logs are written during training steps
+        _log_norm("train/grad_norm", self.gradient_norm(self))
+        _log_norm("train/param_norm", self.parameter_norm(self))
 
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("lr", lr, prog_bar=False, sync_dist=True)
+        self.log("lr", lr, prog_bar=False, on_step=True, sync_dist=False)
 
-        self.log(
-            "train/grad_norm_msa_module",
-            self.gradient_norm(self.msa_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
-        self.log(
-            "train/param_norm_msa_module",
-            self.parameter_norm(self.msa_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_msa_module", self.gradient_norm(self.msa_module))
+        _log_norm("train/param_norm_msa_module", self.parameter_norm(self.msa_module))
 
-        self.log(
-            "train/grad_norm_pairformer_module",
-            self.gradient_norm(self.pairformer_module),
-            prog_bar=False,
-        )
-        self.log(
-            "train/param_norm_pairformer_module",
-            self.parameter_norm(self.pairformer_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_pairformer_module", self.gradient_norm(self.pairformer_module))
+        _log_norm("train/param_norm_pairformer_module", self.parameter_norm(self.pairformer_module))
 
-        self.log(
-            "train/grad_norm_structure_module",
-            self.gradient_norm(self.structure_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
-        self.log(
-            "train/param_norm_structure_module",
-            self.parameter_norm(self.structure_module),
-            prog_bar=False,
-            sync_dist=True,
-        )
+        _log_norm("train/grad_norm_structure_module", self.gradient_norm(self.structure_module))
+        _log_norm("train/param_norm_structure_module", self.parameter_norm(self.structure_module))
 
         if self.confidence_prediction:
-            self.log(
-                "train/grad_norm_confidence_module",
-                self.gradient_norm(self.confidence_module),
-                prog_bar=False,
-                sync_dist=True,
-            )
-            self.log(
-                "train/param_norm_confidence_module",
-                self.parameter_norm(self.confidence_module),
-                prog_bar=False,
-                sync_dist=True,
-            )
+            _log_norm("train/grad_norm_confidence_module", self.gradient_norm(self.confidence_module))
+            _log_norm("train/param_norm_confidence_module", self.parameter_norm(self.confidence_module))
 
     def on_train_epoch_end(self):
         self.log(
