@@ -64,9 +64,9 @@ data:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
   symmetries: /data/scratch-oc40/shaurya10/boltz/empty_symmetries.pkl
-  max_tokens: 512
-  max_atoms: 4608
-  max_seqs: 2048
+  max_tokens: 384
+  max_atoms: 3072
+  max_seqs: 1536
   pad_to_max_tokens: true
   pad_to_max_atoms: true
   pad_to_max_seqs: true
@@ -156,7 +156,7 @@ model:
   training_args:
     recycling_steps: 3
     sampling_steps: 20
-    diffusion_multiplicity: 16
+    diffusion_multiplicity: 8
     diffusion_samples: 2
     confidence_loss_weight: 1e-4
     diffusion_loss_weight: 4.0
@@ -173,7 +173,7 @@ model:
     lr_decay_factor: 0.95
 
   validation_args:
-    recycling_steps: 3
+    recycling_steps: 1
     sampling_steps: 200
     diffusion_samples: 5
     symmetry_correction: true
