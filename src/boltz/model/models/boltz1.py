@@ -599,9 +599,30 @@ class Boltz1(LightningModule):
             else:
                 loss = loss.requires_grad_(True)
         # Log losses (with on_step=True to ensure they're logged during training steps)
-        self.log("train/distogram_loss", disto_loss, on_step=True, sync_dist=True)
-        self.log("train/diffusion_loss", diffusion_loss_dict["loss"], on_step=True, sync_dist=True)
+        # Ensure losses are tensors on the correct device for DDP sync
+        # PyTorch Lightning will handle conversion to scalars when logging to wandb
+        if torch.is_tensor(disto_loss):
+            disto_loss_val = disto_loss.detach()
+        else:
+            disto_loss_val = torch.tensor(disto_loss, device=device)
+        
+        if torch.is_tensor(diffusion_loss_dict["loss"]):
+            diffusion_loss_val = diffusion_loss_dict["loss"].detach()
+        else:
+            diffusion_loss_val = torch.tensor(diffusion_loss_dict["loss"], device=device)
+        
+        if torch.is_tensor(loss):
+            loss_val = loss.detach()
+        else:
+            loss_val = torch.tensor(loss, device=device)
+        
+        self.log("train/distogram_loss", disto_loss_val, on_step=True, sync_dist=True)
+        self.log("train/diffusion_loss", diffusion_loss_val, on_step=True, sync_dist=True)
         for k, v in diffusion_loss_dict["loss_breakdown"].items():
+            if torch.is_tensor(v):
+                v = v.detach()
+            else:
+                v = torch.tensor(v, device=device)
             self.log(f"train/{k}", v, on_step=True, sync_dist=True)
 
         if self.confidence_prediction:
@@ -615,7 +636,7 @@ class Boltz1(LightningModule):
                     if torch.is_tensor(confidence_loss_dict["loss_breakdown"][k])
                     else confidence_loss_dict["loss_breakdown"][k]
                 )
-        self.log("train/loss", loss, on_step=True, sync_dist=True)
+        self.log("train/loss", loss_val, on_step=True, sync_dist=True)
         self.training_log()
         
         # Clear cache periodically after loss computation to free memory
@@ -653,16 +674,17 @@ class Boltz1(LightningModule):
             _log_norm("train/param_norm_confidence_module", self.parameter_norm(self.confidence_module))
 
     def on_train_epoch_end(self):
-        self.log(
-            "train/confidence_loss",
-            self.train_confidence_loss_logger,
-            prog_bar=False,
-            on_step=True,
-            on_epoch=True,
-            sync_dist=True,
-        )
-        for k, v in self.train_confidence_loss_dict_logger.items():
-            self.log(f"train/{k}", v, prog_bar=False, on_step=True, on_epoch=True, sync_dist=True)
+        if self.confidence_prediction:
+            self.log(
+                "train/confidence_loss",
+                self.train_confidence_loss_logger,
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+            for k, v in self.train_confidence_loss_dict_logger.items():
+                self.log(f"train/{k}", v, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
     def gradient_norm(self, module) -> float:
         parameters = filter(lambda p: p.requires_grad and p.grad is not None, module.parameters())
