@@ -2,9 +2,9 @@ trainer:
   accelerator: gpu
   devices: 2
   precision: 32
-  gradient_clip_val: 10.0
+  gradient_clip_val: 3.0
   max_epochs: -1
-  accumulate_grad_batches: 128    # to adjust depending on the number of devices
+  accumulate_grad_batches: 8    # to adjust depending on the number of devices
   log_every_n_steps: 1
 
 # Optional set wandb here
@@ -158,14 +158,14 @@ model:
     sampling_steps: 20
     diffusion_multiplicity: 8
     diffusion_samples: 2
-    confidence_loss_weight: 1e-4
+    confidence_loss_weight: 0
     diffusion_loss_weight: 4.0
-    distogram_loss_weight: 3e-2
+    distogram_loss_weight: 0
     adam_beta_1: 0.9
     adam_beta_2: 0.95
     adam_eps: 0.00000001
     lr_scheduler: af3
-    base_lr: 0.0
+    base_lr: 1e-4
     max_lr: 0.0018
     lr_warmup_no_steps: 1000
     lr_start_decay_after_n_steps: 50000
