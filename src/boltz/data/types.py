@@ -270,7 +270,9 @@ class Structure(NumpySerializable):
         # Concatenate the tables
         atoms = np.concatenate(atoms, dtype=Atom)
         residues = np.array(residues, dtype=Residue)
-        chains = np.array(chains, dtype=Chain)
+        # Preserve the original dtype of chains (may include cyclic_period)
+        chains_dtype = self.chains.dtype if len(self.chains) > 0 else Chain
+        chains = np.array(chains, dtype=chains_dtype)
 
         # Update bonds
         bonds = []
@@ -400,7 +402,9 @@ class StructureV2(NumpySerializable):
         # Concatenate the tables
         atoms = np.concatenate(atoms, dtype=AtomV2)
         residues = np.array(residues, dtype=Residue)
-        chains = np.array(chains, dtype=Chain)
+        # Preserve the original dtype of chains (may include cyclic_period)
+        chains_dtype = self.chains.dtype if len(self.chains) > 0 else Chain
+        chains = np.array(chains, dtype=chains_dtype)
 
         # Update bonds
         bonds = []
