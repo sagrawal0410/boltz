@@ -222,6 +222,12 @@ def main():
         help="Custom path to manifest.json (default: {target_dir}/manifest.json)"
     )
     
+    parser.add_argument(
+        "--no-kernels",
+        action="store_true",
+        help="Disable optimized CUDA kernels (use if you get CUDA library errors)"
+    )
+    
     args = parser.parse_args()
     
     # Step 1: Load validation IDs
@@ -324,7 +330,7 @@ def main():
         map_location="cpu",
         diffusion_process_args=asdict(diffusion_params),
         ema=False,  # Don't use EMA weights for inference
-        use_kernels=True,  # Use optimized kernels
+        use_kernels=not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
         pairformer_args=asdict(pairformer_args),
         msa_args=asdict(msa_args),
         steering_args=asdict(steering_args),
