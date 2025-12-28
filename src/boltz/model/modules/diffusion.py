@@ -349,6 +349,11 @@ class AtomDiffusion(Module):
             Whether to use the inference model cache, by default False.
         accumulate_token_repr : bool, optional
             Whether to accumulate the token representation, by default False.
+        energy_loss_enabled : bool, optional
+            Whether to use energy loss instead of MSE loss for denoiser training, by default True.
+        energy_loss_kwargs : dict, optional
+            Additional arguments for energy loss (e.g., R_list, target_ratio, n_sinkhorn_steps, kernel_type).
+            If None, uses default values.
 
         """
         super().__init__()
@@ -834,19 +839,67 @@ class AtomDiffusion(Module):
             denoised_atom_coords
         )
 
-        # weighted MSE loss of denoised atom positions
-        mse_loss = ((denoised_atom_coords - atom_coords_aligned_ground_truth) ** 2).sum(
-            dim=-1
-        )
-        mse_loss = torch.sum(
-            mse_loss * align_weights * resolved_atom_mask, dim=-1
-        ) / torch.sum(3 * align_weights * resolved_atom_mask, dim=-1)
+        # Compute loss using energy loss or MSE loss
+        if self.energy_loss_enabled:
+            # Use energy loss (contrastive/attention-based loss)
+            # old_denoised_coords: use noised_atom_coords as a proxy for old_gen
+            # This provides a reference point for the contrastive loss
+            old_denoised_coords = noised_atom_coords  # Use noised coordinates as old_gen proxy
+            
+            # Call energy loss wrapper
+            energy_loss_per_batch, energy_info = denoiser_energy_loss(
+                denoised_atom_coords=denoised_atom_coords,
+                ground_truth_coords=atom_coords_aligned_ground_truth,
+                sigmas=sigmas,
+                align_weights=align_weights,
+                resolved_atom_mask=resolved_atom_mask,
+                multiplicity=multiplicity,
+                old_denoised_coords=old_denoised_coords,
+                **self.energy_loss_kwargs,
+            )
+            
+            # Apply sigma weighting per-sample, then aggregate
+            # energy_loss_per_batch is [B], but we need to weight by sigma per-sample [B*multiplicity]
+            # Reshape sigmas to [B, multiplicity] and compute per-batch average weights
+            B = energy_loss_per_batch.shape[0]
+            sigmas_reshaped = sigmas.view(B, multiplicity)  # [B, multiplicity]
+            loss_weights_per_sample = self.loss_weight(sigmas_reshaped)  # [B, multiplicity]
+            # Average weights across multiplicity for each batch item
+            loss_weights = loss_weights_per_sample.mean(dim=1)  # [B]
+            
+            # Apply sigma weighting to per-batch loss
+            energy_loss = (energy_loss_per_batch * loss_weights).mean()
+            
+            total_loss = energy_loss
+            
+            # Store MSE loss for comparison (computed for reference)
+            # Compute MSE loss for logging purposes (not used in total_loss when energy_loss_enabled)
+            mse_loss = ((denoised_atom_coords - atom_coords_aligned_ground_truth) ** 2).sum(
+                dim=-1
+            )
+            mse_loss = torch.sum(
+                mse_loss * align_weights * resolved_atom_mask, dim=-1
+            ) / torch.sum(3 * align_weights * resolved_atom_mask, dim=-1)
+            # Apply sigma weighting and average
+            loss_weights_mse = self.loss_weight(sigmas)
+            mse_loss = (mse_loss * loss_weights_mse).mean()
+        else:
+            # Use original MSE loss
+            # weighted MSE loss of denoised atom positions
+            mse_loss = ((denoised_atom_coords - atom_coords_aligned_ground_truth) ** 2).sum(
+                dim=-1
+            )
+            mse_loss = torch.sum(
+                mse_loss * align_weights * resolved_atom_mask, dim=-1
+            ) / torch.sum(3 * align_weights * resolved_atom_mask, dim=-1)
 
-        # weight by sigma factor
-        loss_weights = self.loss_weight(sigmas)
-        mse_loss = (mse_loss * loss_weights).mean()
+            # weight by sigma factor
+            loss_weights = self.loss_weight(sigmas)
+            mse_loss = (mse_loss * loss_weights).mean()
 
-        total_loss = mse_loss
+            total_loss = mse_loss
+            energy_loss = self.zero
+            energy_info = {}
 
         # proposed auxiliary smooth lddt loss
         lddt_loss = self.zero
@@ -862,9 +915,23 @@ class AtomDiffusion(Module):
 
             total_loss = total_loss + lddt_loss
 
+        # Build loss breakdown dict
         loss_breakdown = dict(
             mse_loss=mse_loss,
             smooth_lddt_loss=lddt_loss,
         )
+        
+        # Add energy loss info to breakdown
+        if self.energy_loss_enabled:
+            loss_breakdown["energy_loss"] = energy_loss
+            # Add key metrics from energy_info
+            for key, value in energy_info.items():
+                if torch.is_tensor(value):
+                    if value.numel() == 1:
+                        loss_breakdown[f"energy_{key}"] = value.item()
+                    else:
+                        loss_breakdown[f"energy_{key}"] = value.mean().item()
+                else:
+                    loss_breakdown[f"energy_{key}"] = value
 
         return dict(loss=total_loss, loss_breakdown=loss_breakdown)
