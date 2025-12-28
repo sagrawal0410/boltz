@@ -16,6 +16,7 @@ from boltz.model.loss.diffusion import (
     smooth_lddt_loss,
     weighted_rigid_align,
 )
+from boltz.model.loss.energy_loss import denoiser_energy_loss
 from boltz.model.modules.utils import center_random_augmentation
 from boltz.model.modules.encoders import (
     AtomAttentionDecoder,
@@ -304,6 +305,8 @@ class AtomDiffusion(Module):
         synchronize_sigmas=False,
         use_inference_model_cache=False,
         accumulate_token_repr=False,
+        energy_loss_enabled=True,
+        energy_loss_kwargs=None,
         **kwargs,
     ):
         """Initialize the atom diffusion module.
@@ -373,6 +376,8 @@ class AtomDiffusion(Module):
         self.alignment_reverse_diff = alignment_reverse_diff
         self.synchronize_sigmas = synchronize_sigmas
         self.use_inference_model_cache = use_inference_model_cache
+        self.energy_loss_enabled = energy_loss_enabled
+        self.energy_loss_kwargs = energy_loss_kwargs if energy_loss_kwargs is not None else {}
 
         self.accumulate_token_repr = accumulate_token_repr
         self.token_s = score_model_args["token_s"]
