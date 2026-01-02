@@ -52,6 +52,10 @@ def evaluate_structure(
     executable: str = "/bin/bash",
 ) -> None:
     """Evaluate the structure."""
+    # Convert to Path objects if strings were passed
+    pred = Path(pred)
+    reference = Path(reference)
+    
     # Evaluate polymer metrics
     out_path = Path(outdir) / f"{name}.json"
 
