@@ -60,36 +60,82 @@ def evaluate_structure(
             f"Skipping recomputation of {name} as protein json file already exists"
         )
     else:
-        subprocess.run(
-            OST_COMPARE_STRUCTURE.format(
-                model_file=str(pred),
-                reference_file=str(reference),
-                output_path=str(out_path),
-                mount=mount,
-            ),
+        # Check if files exist before running
+        if not pred.exists():
+            print(f"ERROR: Prediction file not found: {pred}")  # noqa: T201
+            return
+        if not reference.exists():
+            print(f"ERROR: Reference file not found: {reference}")  # noqa: T201
+            return
+        
+        # Build the command
+        command_str = OST_COMPARE_STRUCTURE.format(
+            model_file=str(pred),
+            reference_file=str(reference),
+            output_path=str(out_path),
+            mount=mount,
+        )
+        
+        result = subprocess.run(
+            command_str,
             shell=True,  # noqa: S602
             check=False,
             executable=executable,
             capture_output=True,
         )
+        
+        # Check for errors
+        if result.returncode != 0:
+            print(f"ERROR evaluating {name}:")  # noqa: T201
+            if result.stderr:
+                print(result.stderr.decode())  # noqa: T201
+            if result.stdout:
+                print(result.stdout.decode())  # noqa: T201
+        elif not out_path.exists():
+            print(f"WARNING: Output file not created: {out_path}")  # noqa: T201
+            if result.stdout:
+                print(f"Command output: {result.stdout.decode()}")  # noqa: T201
 
     # Evaluate ligand metrics
     out_path = Path(outdir) / f"{name}_ligand.json"
     if out_path.exists():
         print(f"Skipping recomputation of {name} as ligand json file already exists")  # noqa: T201
     else:
-        subprocess.run(
-            OST_COMPARE_LIGAND.format(
-                model_file=str(pred),
-                reference_file=str(reference),
-                output_path=str(out_path),
-                mount=mount,
-            ),
+        # Check if files exist before running
+        if not pred.exists():
+            print(f"ERROR: Prediction file not found: {pred}")  # noqa: T201
+            return
+        if not reference.exists():
+            print(f"ERROR: Reference file not found: {reference}")  # noqa: T201
+            return
+        
+        # Build the command
+        command_str = OST_COMPARE_LIGAND.format(
+            model_file=str(pred),
+            reference_file=str(reference),
+            output_path=str(out_path),
+            mount=mount,
+        )
+        
+        result = subprocess.run(
+            command_str,
             shell=True,  # noqa: S602
             check=False,
             executable=executable,
             capture_output=True,
         )
+        
+        # Check for errors
+        if result.returncode != 0:
+            print(f"ERROR evaluating {name} (ligand):")  # noqa: T201
+            if result.stderr:
+                print(result.stderr.decode())  # noqa: T201
+            if result.stdout:
+                print(result.stdout.decode())  # noqa: T201
+        elif not out_path.exists():
+            print(f"WARNING: Output file not created: {out_path}")  # noqa: T201
+            if result.stdout:
+                print(f"Command output: {result.stdout.decode()}")  # noqa: T201
 
 
 def main(args):
