@@ -21,7 +21,7 @@ command="compare-structures \
 --lddt --bb-lddt --qs-score --dockq \
 --ics --ips --rigid-scores --patch-scores --tm-score"
 
-sudo docker run -u $(id -u):$(id -g) --rm --volume {mount}:{mount} $IMAGE_NAME $command
+$command
 """
 
 
@@ -39,7 +39,7 @@ command="compare-ligand-structures \
 --substructure-match \
 -o {output_path}"
 
-sudo docker run -u $(id -u):$(id -g) --rm --volume {mount}:{mount} $IMAGE_NAME $command
+$command
 """
 
 
