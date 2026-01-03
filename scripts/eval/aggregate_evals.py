@@ -669,42 +669,46 @@ def main():
         desired_tools, desired_metrics, df, "PDB Test", output_folder + "plot_test.pdf"
     )
 
-    # Eval CASP
-    chai_preds = eval_folder + "outputs/casp15/chai"
-    chai_evals = eval_folder + "evals/casp15/chai"
+    # Eval CASP - skip if directory doesn't exist
+    boltz_preds_casp = eval_folder + "outputs/casp15/boltz/predictions"
+    if Path(boltz_preds_casp).exists():
+        chai_preds = eval_folder + "outputs/casp15/chai"
+        chai_evals = eval_folder + "evals/casp15/chai"
 
-    af3_preds = eval_folder + "outputs/casp15/af3"
-    af3_evals = eval_folder + "evals/casp15/af3"
+        af3_preds = eval_folder + "outputs/casp15/af3"
+        af3_evals = eval_folder + "evals/casp15/af3"
 
-    boltz_preds = eval_folder + "outputs/casp15/boltz/predictions"
-    boltz_evals = eval_folder + "evals/casp15/boltz"
+        boltz_preds = eval_folder + "outputs/casp15/boltz/predictions"
+        boltz_evals = eval_folder + "evals/casp15/boltz"
 
-    boltz_preds_x = eval_folder + "outputs/casp15/boltzx/predictions"
-    boltz_evals_x = eval_folder + "evals/casp15/boltzx"
+        boltz_preds_x = eval_folder + "outputs/casp15/boltzx/predictions"
+        boltz_evals_x = eval_folder + "evals/casp15/boltzx"
 
-    # Skip validity checks
-    # validity_checks = eval_folder + "physical_checks_casp.csv"
-    # df_validity_checks = pd.read_csv(validity_checks)
-    # df_validity_checks = eval_validity_checks(df_validity_checks)
+        # Skip validity checks
+        # validity_checks = eval_folder + "physical_checks_casp.csv"
+        # df_validity_checks = pd.read_csv(validity_checks)
+        # df_validity_checks = eval_validity_checks(df_validity_checks)
 
-    df = eval_models(
-        chai_preds,
-        chai_evals,
-        af3_preds,
-        af3_evals,
-        boltz_preds,
-        boltz_evals,
-        boltz_preds_x,
-        boltz_evals_x,
-    )
+        df = eval_models(
+            chai_preds,
+            chai_evals,
+            af3_preds,
+            af3_evals,
+            boltz_preds,
+            boltz_evals,
+            boltz_preds_x,
+            boltz_evals_x,
+        )
 
-    # Skip validity checks concatenation
-    # df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
-    df.to_csv(output_folder + "results_casp.csv", index=False)
+        # Skip validity checks concatenation
+        # df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
+        df.to_csv(output_folder + "results_casp.csv", index=False)
 
-    plot_data(
-        desired_tools, desired_metrics, df, "CASP15", output_folder + "plot_casp.pdf"
-    )
+        plot_data(
+            desired_tools, desired_metrics, df, "CASP15", output_folder + "plot_casp.pdf"
+        )
+    else:
+        print("Skipping CASP evaluation - directory not found")
 
 
 if __name__ == "__main__":
