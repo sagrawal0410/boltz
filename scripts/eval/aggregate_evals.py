@@ -220,7 +220,14 @@ def compute_boltz_metrics(preds, evals, name):
         with eval_file.open("r") as f:
             eval_data = json.load(f)
             for metric_name in METRICS:
-                if metric_name in eval_data:
+                if metric_name == "lddt":
+                    # Use ics (intra-chain scores) for multi-chain complexes if available,
+                    # otherwise fall back to lddt for single-chain proteins
+                    if "ics" in eval_data and eval_data["ics"] is not None and eval_data["ics"] != 0.0:
+                        metrics.setdefault(metric_name, []).append(eval_data["ics"])
+                    elif metric_name in eval_data:
+                        metrics.setdefault(metric_name, []).append(eval_data[metric_name])
+                elif metric_name in eval_data:
                     metrics.setdefault(metric_name, []).append(eval_data[metric_name])
 
             if "dockq" in eval_data and eval_data["dockq"] is not None:
@@ -292,6 +299,68 @@ def compute_boltz_metrics(preds, evals, name):
         }
 
     return results
+
+
+def eval_models_boltz_only(boltz_preds, boltz_evals):
+    """Evaluate only Boltz models."""
+    # Load preds
+    boltz_preds_names = {
+        x.name.lower(): x
+        for x in Path(boltz_preds).iterdir()
+        if not x.name.lower().startswith(".")
+    }
+
+    print("Boltz preds", len(boltz_preds_names))
+
+    common = set(boltz_preds_names.keys())
+    print("Common", len(common))
+
+    # Create a dataframe with the following schema:
+    # tool, name, metric, oracle, average, top1
+    results = []
+    for name in tqdm(common):
+        try:
+            boltz_results = compute_boltz_metrics(
+                boltz_preds_names[name],
+                boltz_evals,
+                name,
+            )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            print(f"Error evaluating Boltz {name}: {e}")
+            continue
+
+        for metric_name in boltz_results:
+            results.append(
+                {
+                    "tool": "Boltz-1 oracle",
+                    "target": name,
+                    "metric": metric_name,
+                    "value": boltz_results[metric_name]["oracle"],
+                }
+            )
+            results.append(
+                {
+                    "tool": "Boltz-1 top-1",
+                    "target": name,
+                    "metric": metric_name,
+                    "value": boltz_results[metric_name]["top1"],
+                }
+            )
+            results.append(
+                {
+                    "tool": "Boltz-1 average",
+                    "target": name,
+                    "metric": metric_name,
+                    "value": boltz_results[metric_name]["average"],
+                }
+            )
+
+    # Write the results to a file
+    df = pd.DataFrame(results)
+    return df
 
 
 def eval_models(
@@ -662,6 +731,44 @@ def plot_data(desired_tools, desired_metrics, df, dataset, filename):
 
 
 def main():
+    # User's paths
+    boltz_preds = "/data/scratch-oc40/shaurya10/predictions"
+    boltz_evals = "/data/scratch-oc40/shaurya10/boltz/eval_results"
+    output_folder = "/data/scratch-oc40/shaurya10/boltz/full_eval_results/"
+
+    # Evaluate only Boltz models
+    df = eval_models_boltz_only(boltz_preds, boltz_evals)
+
+    # Save results
+    output_file = Path(output_folder) / "results_boltz.csv"
+    df.to_csv(output_file, index=False)
+    print(f"Results saved to {output_file}")
+
+    # Print summary statistics
+    print("\n=== Summary Statistics ===")
+    for metric in ["lddt", "bb_lddt", "tm_score", "rmsd"]:
+        metric_df = df[df["metric"] == metric]
+        if not metric_df.empty:
+            print(f"\n{metric.upper()}:")
+            for tool in ["Boltz-1 oracle", "Boltz-1 top-1", "Boltz-1 average"]:
+                tool_df = metric_df[metric_df["tool"] == tool]
+                if not tool_df.empty:
+                    mean_val = tool_df["value"].mean()
+                    print(f"  {tool}: {mean_val:.4f}")
+
+    # Optionally create plots
+    desired_tools = ["Boltz-1 oracle", "Boltz-1 top-1"]
+    desired_metrics = ["lddt", "bb_lddt", "tm_score", "rmsd"]
+    plot_file = Path(output_folder) / "plot_boltz.pdf"
+    try:
+        plot_data(desired_tools, desired_metrics, df, "Boltz Evaluation", str(plot_file))
+        print(f"\nPlot saved to {plot_file}")
+    except Exception as e:
+        print(f"Warning: Could not create plot: {e}")
+
+
+def main_original():
+    """Original main function for reference."""
     eval_folder = "../../boltz_results_final/"
     output_folder = "../../boltz_results_final/"
 
