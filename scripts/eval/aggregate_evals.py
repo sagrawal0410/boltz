@@ -204,10 +204,11 @@ def compute_boltz_metrics(preds, evals, name):
     top_model = None
     top_confidence = 0
     for model_id in range(5):
-        # Load confidence file
-        confidence_file = (
-            Path(preds) / f"confidence_{Path(preds).name}_model_{model_id}.json"
-        )
+        # Load confidence file - preds is the structure directory, name is the structure name
+        confidence_file = Path(preds) / f"confidence_{name}_model_{model_id}.json"
+        if not confidence_file.exists():
+            # Skip if confidence file doesn't exist
+            continue
         with confidence_file.open("r") as f:
             confidence_data = json.load(f)
             confidence = confidence_data["confidence_score"]
@@ -270,7 +271,10 @@ def compute_boltz_metrics(preds, evals, name):
     # Get oracle
     oracle = {k: min(v) if k == "rmsd" else max(v) for k, v in metrics.items()}
     avg = {k: sum(v) / len(v) for k, v in metrics.items()}
-    top1 = {k: v[top_model] for k, v in metrics.items()}
+    # Default to model 0 if no confidence files found
+    if top_model is None:
+        top_model = 0
+    top1 = {k: v[top_model] if top_model < len(v) else v[0] for k, v in metrics.items()}
 
     results = {}
     for metric_name in metrics:
@@ -315,10 +319,11 @@ def eval_models(
     #     for x in Path(af3_preds).iterdir()
     #     if not x.name.lower().startswith(".")
     # }
+    # Filter out non-structure directories like lightning_logs
     boltz_preds_names = {
         x.name.lower(): x
         for x in Path(boltz_preds).iterdir()
-        if not x.name.lower().startswith(".")
+        if not x.name.lower().startswith(".") and x.is_dir() and x.name.lower() != "lightning_logs"
     }
     # Skip boltz_preds_x if directory doesn't exist
     boltz_preds_names_x = {}
@@ -538,17 +543,13 @@ def plot_data(desired_tools, desired_metrics, df, dataset, filename):
     upper_data = boot_stats["upper"].unstack("tool")
     upper_data = upper_data.reindex(desired_metrics)
 
-    # If you need a specific order of tools:
-    tool_order = [
-        "AF3 oracle",
-        "AF3 top-1",
-        "Chai-1 oracle",
-        "Chai-1 top-1",
-        "Boltz-1 oracle",
-        "Boltz-1 top-1",
-        "Boltz-1x oracle",
-        "Boltz-1x top-1",
-    ]
+    # Only use tools that exist in the data
+    available_tools = [tool for tool in plot_data.columns if tool in desired_tools]
+    if not available_tools:
+        print("Warning: No tools found in data for plotting")
+        return
+    
+    tool_order = available_tools
     plot_data = plot_data[tool_order]
     lower_data = lower_data[tool_order]
     upper_data = upper_data[tool_order]
@@ -566,17 +567,18 @@ def plot_data(desired_tools, desired_metrics, df, dataset, filename):
     upper_data = upper_data.rename(index=renaming)
     mean_vals = plot_data.values
 
-    # Colors
-    tool_colors = [
-        "#994C00",  # AF3 oracle
-        "#FFB55A",  # AF3 top-1
-        "#931652",  # Chai-1 oracle
-        "#FC8AD9",  # Chai-1 top-1
-        "#188F52",  # Boltz-1 oracle
-        "#86E935",  # Boltz-1 top-1
-        "#004D80",  # Boltz-1x oracle
-        "#55C2FF",  # Boltz-1x top-1
-    ]
+    # Colors - map to available tools
+    color_map = {
+        "AF3 oracle": "#994C00",
+        "AF3 top-1": "#FFB55A",
+        "Chai-1 oracle": "#931652",
+        "Chai-1 top-1": "#FC8AD9",
+        "Boltz-1 oracle": "#188F52",
+        "Boltz-1 top-1": "#86E935",
+        "Boltz-1x oracle": "#004D80",
+        "Boltz-1x top-1": "#55C2FF",
+    }
+    tool_colors = [color_map.get(tool, "#808080") for tool in tool_order]
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
