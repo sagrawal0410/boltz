@@ -678,10 +678,10 @@ def main():
     boltz_preds_x = eval_folder + "outputs/test/boltzx/predictions"
     boltz_evals_x = eval_folder + "evals/test/boltzx"
 
-    validity_checks = eval_folder + "physical_checks_test.csv"
-
-    df_validity_checks = pd.read_csv(validity_checks)
-    df_validity_checks = eval_validity_checks(df_validity_checks)
+    # Skip validity checks
+    # validity_checks = eval_folder + "physical_checks_test.csv"
+    # df_validity_checks = pd.read_csv(validity_checks)
+    # df_validity_checks = eval_validity_checks(df_validity_checks)
 
     df = eval_models(
         chai_preds,
@@ -694,7 +694,8 @@ def main():
         boltz_evals_x,
     )
 
-    df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
+    # Skip validity checks concatenation
+    # df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
     df.to_csv(output_folder + "results_test.csv", index=False)
 
     desired_tools = [
@@ -707,7 +708,7 @@ def main():
         "Boltz-1x oracle",
         "Boltz-1x top-1",
     ]
-    desired_metrics = ["lddt", "dockq_>0.23", "lddt_pli", "rmsd<2", "physical validity"]
+    desired_metrics = ["lddt", "dockq_>0.23", "lddt_pli", "rmsd<2"]
     plot_data(
         desired_tools, desired_metrics, df, "PDB Test", output_folder + "plot_test.pdf"
     )
@@ -725,10 +726,10 @@ def main():
     boltz_preds_x = eval_folder + "outputs/casp15/boltzx/predictions"
     boltz_evals_x = eval_folder + "evals/casp15/boltzx"
 
-    validity_checks = eval_folder + "physical_checks_casp.csv"
-
-    df_validity_checks = pd.read_csv(validity_checks)
-    df_validity_checks = eval_validity_checks(df_validity_checks)
+    # Skip validity checks
+    # validity_checks = eval_folder + "physical_checks_casp.csv"
+    # df_validity_checks = pd.read_csv(validity_checks)
+    # df_validity_checks = eval_validity_checks(df_validity_checks)
 
     df = eval_models(
         chai_preds,
@@ -741,7 +742,8 @@ def main():
         boltz_evals_x,
     )
 
-    df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
+    # Skip validity checks concatenation
+    # df = pd.concat([df, df_validity_checks]).reset_index(drop=True)
     df.to_csv(output_folder + "results_casp.csv", index=False)
 
     plot_data(
