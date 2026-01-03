@@ -621,7 +621,7 @@ def plot_data(desired_tools, desired_metrics, df, dataset, filename):
 
 def main():
     eval_folder = "../../boltz_results_final/"
-    output_folder = "../../boltz_results_final/"
+    output_folder = "/data/scratch-oc40/shaurya10/boltz/boltz_existing_results/"
 
     # Eval the test set
     chai_preds = eval_folder + "outputs/test/chai"
