@@ -221,7 +221,14 @@ def compute_boltz_metrics(preds, evals, name):
         with eval_file.open("r") as f:
             eval_data = json.load(f)
             for metric_name in METRICS:
-                if metric_name in eval_data:
+                if metric_name == "lddt":
+                    # Use ics (intra-chain scores) for multi-chain complexes if available,
+                    # otherwise fall back to lddt for single-chain proteins
+                    if "ics" in eval_data and eval_data["ics"] is not None and eval_data["ics"] != 0.0:
+                        metrics.setdefault(metric_name, []).append(eval_data["ics"])
+                    elif metric_name in eval_data:
+                        metrics.setdefault(metric_name, []).append(eval_data[metric_name])
+                elif metric_name in eval_data:
                     metrics.setdefault(metric_name, []).append(eval_data[metric_name])
 
             if "dockq" in eval_data and eval_data["dockq"] is not None:
