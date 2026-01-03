@@ -197,8 +197,8 @@ def main():
     parser.add_argument(
         "--recycling-steps",
         type=int,
-        default=1,
-        help="Number of recycling steps (default: 1)"
+        default=3,
+        help="Number of recycling steps (default: 3, matching validation config)"
     )
     
     parser.add_argument(
@@ -226,6 +226,19 @@ def main():
         "--no-kernels",
         action="store_true",
         help="Disable optimized CUDA kernels (use if you get CUDA library errors)"
+    )
+    
+    parser.add_argument(
+        "--use-ema",
+        action="store_true",
+        help="Use EMA weights from checkpoint (recommended for best performance)"
+    )
+    
+    parser.add_argument(
+        "--symmetry-correction",
+        action="store_true",
+        default=True,
+        help="Enable symmetry correction (default: True, matching validation config)"
     )
     
     args = parser.parse_args()
@@ -298,18 +311,73 @@ def main():
     
     print(f"Loading checkpoint from: {args.checkpoint}")
     
-    # Set up model parameters (using Boltz1 defaults)
-    diffusion_params = BoltzDiffusionParams()
-    diffusion_params.step_scale = 1.638  # Boltz1 default
-    pairformer_args = PairformerArgs()
-    msa_args = MSAModuleArgs(
-        subsample_msa=False,
-        num_subsampled_msa=1024,
-        use_paired_feature=False,  # Boltz1 doesn't use paired features
-    )
-    steering_args = BoltzSteeringParams()
+    # Try to load hyperparameters from checkpoint first
+    try:
+        checkpoint_data = torch.load(str(args.checkpoint), map_location="cpu")
+        hparams = checkpoint_data.get("hyper_parameters", {})
+        print(f"Found hyperparameters in checkpoint")
+        
+        # Extract hyperparameters if available
+        if "diffusion_process_args" in hparams:
+            diffusion_params_dict = hparams["diffusion_process_args"]
+            diffusion_params = BoltzDiffusionParams(**diffusion_params_dict)
+            print(f"  Using step_scale from checkpoint: {diffusion_params.step_scale}")
+        else:
+            diffusion_params = BoltzDiffusionParams()
+            diffusion_params.step_scale = 1.638  # Boltz1 default
+            print(f"  Using default step_scale: {diffusion_params.step_scale}")
+        
+        if "pairformer_args" in hparams:
+            pairformer_args = PairformerArgs(**hparams["pairformer_args"])
+            print(f"  Using pairformer_args from checkpoint")
+        else:
+            pairformer_args = PairformerArgs()
+            print(f"  Using default pairformer_args")
+        
+        if "msa_args" in hparams:
+            msa_args_dict = hparams["msa_args"]
+            msa_args = MSAModuleArgs(**msa_args_dict)
+            print(f"  Using msa_args from checkpoint: subsample_msa={msa_args.subsample_msa}")
+        else:
+            msa_args = MSAModuleArgs(
+                subsample_msa=False,
+                num_subsampled_msa=1024,
+                use_paired_feature=False,  # Boltz1 doesn't use paired features
+            )
+            print(f"  Using default msa_args: subsample_msa=False")
+        
+        if "steering_args" in hparams:
+            steering_args = BoltzSteeringParams(**hparams["steering_args"])
+            print(f"  Using steering_args from checkpoint")
+        else:
+            steering_args = BoltzSteeringParams()
+            print(f"  Using default steering_args")
+            
+        # Check if EMA was used during training
+        use_ema_from_checkpoint = hparams.get("ema", False)
+        if use_ema_from_checkpoint and args.use_ema:
+            print(f"  EMA was used during training, will use EMA weights")
+        elif use_ema_from_checkpoint and not args.use_ema:
+            print(f"  WARNING: EMA was used during training but --use-ema not set!")
+            print(f"  This may significantly reduce performance. Consider using --use-ema")
+    except Exception as e:
+        print(f"Warning: Could not load hyperparameters from checkpoint: {e}")
+        print(f"  Using default hyperparameters")
+        # Fall back to defaults
+        diffusion_params = BoltzDiffusionParams()
+        diffusion_params.step_scale = 1.638  # Boltz1 default
+        pairformer_args = PairformerArgs()
+        msa_args = MSAModuleArgs(
+            subsample_msa=False,
+            num_subsampled_msa=1024,
+            use_paired_feature=False,  # Boltz1 doesn't use paired features
+        )
+        steering_args = BoltzSteeringParams()
+        use_ema_from_checkpoint = False
     
     # Predict args (matching validation settings from config)
+    # Note: symmetry_correction is part of validation_args, not predict_args
+    # It will be loaded from checkpoint's hyper_parameters automatically
     predict_args = {
         "recycling_steps": args.recycling_steps,
         "sampling_steps": args.sampling_steps,
@@ -320,16 +388,23 @@ def main():
         "write_full_pde": False,
     }
     
+    print(f"\nPrediction settings:")
+    print(f"  Recycling steps: {predict_args['recycling_steps']}")
+    print(f"  Sampling steps: {predict_args['sampling_steps']}")
+    print(f"  Diffusion samples: {predict_args['diffusion_samples']}")
+    print(f"  Symmetry correction: {args.symmetry_correction} (will be set via validation_args)")
+    print(f"  Using EMA weights: {args.use_ema}")
+    
     # Load model from checkpoint
-    # Note: We need to load with the model's hyperparameters from the checkpoint
-    # The checkpoint should contain all necessary model config
+    # Note: EMA weights are automatically used if ema=True and checkpoint contains EMA state
+    # The prepare_eval() method in on_predict_start() will use EMA weights if available
     model_module = Boltz1.load_from_checkpoint(
         str(args.checkpoint),
-        strict=False,  # Allow some flexibility in loading
+        strict=True,  # Changed to True to catch parameter mismatches
         predict_args=predict_args,
         map_location="cpu",
         diffusion_process_args=asdict(diffusion_params),
-        ema=False,  # Don't use EMA weights for inference
+        ema=args.use_ema,  # Use EMA weights if requested
         use_kernels=not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
         pairformer_args=asdict(pairformer_args),
         msa_args=asdict(msa_args),
