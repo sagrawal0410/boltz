@@ -304,39 +304,40 @@ def eval_models(
     boltz_preds_x,
     boltz_evals_x,
 ):
-    # Load preds and make sure we have predictions for all models
-    chai_preds_names = {
-        x.name.lower(): x
-        for x in Path(chai_preds).iterdir()
-        if not x.name.lower().startswith(".")
-    }
-    af3_preds_names = {
-        x.name.lower(): x
-        for x in Path(af3_preds).iterdir()
-        if not x.name.lower().startswith(".")
-    }
+    # Skip AF3 and Chai - only process Boltz
+    # chai_preds_names = {
+    #     x.name.lower(): x
+    #     for x in Path(chai_preds).iterdir()
+    #     if not x.name.lower().startswith(".")
+    # }
+    # af3_preds_names = {
+    #     x.name.lower(): x
+    #     for x in Path(af3_preds).iterdir()
+    #     if not x.name.lower().startswith(".")
+    # }
     boltz_preds_names = {
         x.name.lower(): x
         for x in Path(boltz_preds).iterdir()
         if not x.name.lower().startswith(".")
     }
-    boltz_preds_names_x = {
-        x.name.lower(): x
-        for x in Path(boltz_preds_x).iterdir()
-        if not x.name.lower().startswith(".")
-    }
+    # Skip boltz_preds_x if directory doesn't exist
+    boltz_preds_names_x = {}
+    if Path(boltz_preds_x).exists():
+        boltz_preds_names_x = {
+            x.name.lower(): x
+            for x in Path(boltz_preds_x).iterdir()
+            if not x.name.lower().startswith(".")
+        }
 
-    print("Chai preds", len(chai_preds_names))
-    print("Af3 preds", len(af3_preds_names))
+    # print("Chai preds", len(chai_preds_names))
+    # print("Af3 preds", len(af3_preds_names))
     print("Boltz preds", len(boltz_preds_names))
     print("Boltzx preds", len(boltz_preds_names_x))
 
-    common = (
-        set(chai_preds_names.keys())
-        & set(af3_preds_names.keys())
-        & set(boltz_preds_names.keys())
-        & set(boltz_preds_names_x.keys())
-    )
+    # Only use boltz structures
+    common = set(boltz_preds_names.keys())
+    if boltz_preds_names_x:
+        common = common & set(boltz_preds_names_x.keys())
 
     # Remove examples in the validation set
     keys_to_remove = ["t1133", "h1134", "r1134s1", "t1134s2", "t1121", "t1123", "t1159"]
@@ -349,31 +350,30 @@ def eval_models(
     # tool, name, metric, oracle, average, top1
     results = []
     for name in tqdm(common):
-        try:
-            af3_results = compute_af3_metrics(
-                af3_preds_names[name],
-                af3_evals,
-                name,
-            )
-
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            print(f"Error evaluating AF3 {name}: {e}")
-            continue
-        try:
-            chai_results = compute_chai_metrics(
-                chai_preds_names[name],
-                chai_evals,
-                name,
-            )
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            print(f"Error evaluating Chai {name}: {e}")
-            continue
+        # Skip AF3 and Chai
+        # try:
+        #     af3_results = compute_af3_metrics(
+        #         af3_preds_names[name],
+        #         af3_evals,
+        #         name,
+        #     )
+        # except Exception as e:
+        #     import traceback
+        #     traceback.print_exc()
+        #     print(f"Error evaluating AF3 {name}: {e}")
+        #     continue
+        # try:
+        #     chai_results = compute_chai_metrics(
+        #         chai_preds_names[name],
+        #         chai_evals,
+        #         name,
+        #     )
+        # except Exception as e:
+        #     import traceback
+        #     traceback.print_exc()
+        #     print(f"Error evaluating Chai {name}: {e}")
+        #     continue
+        
         try:
             boltz_results = compute_boltz_metrics(
                 boltz_preds_names[name],
@@ -387,67 +387,26 @@ def eval_models(
             print(f"Error evaluating Boltz {name}: {e}")
             continue
 
-        try:
-            boltz_results_x = compute_boltz_metrics(
-                boltz_preds_names_x[name],
-                boltz_evals_x,
-                name,
-            )
-        except Exception as e:
-            import traceback
+        boltz_results_x = None
+        if boltz_preds_names_x and name in boltz_preds_names_x:
+            try:
+                boltz_results_x = compute_boltz_metrics(
+                    boltz_preds_names_x[name],
+                    boltz_evals_x,
+                    name,
+                )
+            except Exception as e:
+                import traceback
 
-            traceback.print_exc()
-            print(f"Error evaluating Boltzx {name}: {e}")
-            continue
+                traceback.print_exc()
+                print(f"Error evaluating Boltzx {name}: {e}")
+                boltz_results_x = None
 
-        for metric_name in af3_results:
-            if metric_name in chai_results and metric_name in boltz_results:
-                if (
-                    (
-                        af3_results[metric_name]["len"]
-                        == chai_results[metric_name]["len"]
-                    )
-                    and (
-                        af3_results[metric_name]["len"]
-                        == boltz_results[metric_name]["len"]
-                    )
-                    and (
-                        af3_results[metric_name]["len"]
-                        == boltz_results_x[metric_name]["len"]
-                    )
-                ):
-                    results.append(
-                        {
-                            "tool": "AF3 oracle",
-                            "target": name,
-                            "metric": metric_name,
-                            "value": af3_results[metric_name]["oracle"],
-                        }
-                    )
-                    results.append(
-                        {
-                            "tool": "AF3 top-1",
-                            "target": name,
-                            "metric": metric_name,
-                            "value": af3_results[metric_name]["top1"],
-                        }
-                    )
-                    results.append(
-                        {
-                            "tool": "Chai-1 oracle",
-                            "target": name,
-                            "metric": metric_name,
-                            "value": chai_results[metric_name]["oracle"],
-                        }
-                    )
-                    results.append(
-                        {
-                            "tool": "Chai-1 top-1",
-                            "target": name,
-                            "metric": metric_name,
-                            "value": chai_results[metric_name]["top1"],
-                        }
-                    )
+        # Only process Boltz results
+        for metric_name in boltz_results:
+            if boltz_results_x and metric_name in boltz_results_x:
+                # Check lengths match
+                if boltz_results[metric_name]["len"] == boltz_results_x[metric_name]["len"]:
                     results.append(
                         {
                             "tool": "Boltz-1 oracle",
@@ -480,24 +439,23 @@ def eval_models(
                             "value": boltz_results_x[metric_name]["top1"],
                         }
                     )
-                else:
-                    print(
-                        "Different lengths",
-                        name,
-                        metric_name,
-                        af3_results[metric_name]["len"],
-                        chai_results[metric_name]["len"],
-                        boltz_results[metric_name]["len"],
-                        boltz_results_x[metric_name]["len"],
-                    )
             else:
-                print(
-                    "Missing metric",
-                    name,
-                    metric_name,
-                    metric_name in chai_results,
-                    metric_name in boltz_results,
-                    metric_name in boltz_results_x,
+                # Only boltz_results available
+                results.append(
+                    {
+                        "tool": "Boltz-1 oracle",
+                        "target": name,
+                        "metric": metric_name,
+                        "value": boltz_results[metric_name]["oracle"],
+                    }
+                )
+                results.append(
+                    {
+                        "tool": "Boltz-1 top-1",
+                        "target": name,
+                        "metric": metric_name,
+                        "value": boltz_results[metric_name]["top1"],
+                    }
                 )
 
     # Write the results to a file, ensure we only keep the target & metrics where we have all tools
@@ -699,10 +657,6 @@ def main():
     df.to_csv(output_folder + "results_test.csv", index=False)
 
     desired_tools = [
-        "AF3 oracle",
-        "AF3 top-1",
-        "Chai-1 oracle",
-        "Chai-1 top-1",
         "Boltz-1 oracle",
         "Boltz-1 top-1",
         "Boltz-1x oracle",
