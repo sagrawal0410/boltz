@@ -195,12 +195,12 @@ class Boltz1(LightningModule):
                 **msa_args,
             )
             # Freeze MSA module - only train denoiser
-            for param in self.msa_module.parameters():
-                param.requires_grad = False
+            # for param in self.msa_module.parameters():
+            #     param.requires_grad = False
         self.pairformer_module = PairformerModule(token_s, token_z, **pairformer_args)
         # Freeze pairformer module - only train denoiser
-        for param in self.pairformer_module.parameters():
-            param.requires_grad = False
+        # for param in self.pairformer_module.parameters():
+        #     param.requires_grad = False
         if compile_pairformer:
             # Big models hit the default cache limit (8)
             self.is_pairformer_compiled = True
@@ -387,8 +387,10 @@ class Boltz1(LightningModule):
             }
 
         # Detach MSA and pairformer outputs to stop gradients - only train denoiser
-        s_trunk_detached = s.detach()
-        z_trunk_detached = z.detach()
+        # s_trunk_detached = s.detach()
+        # z_trunk_detached = z.detach()
+        s_trunk_detached = s
+        z_trunk_detached = z
 
         # Compute structure module
 
@@ -624,10 +626,16 @@ class Boltz1(LightningModule):
         # Build conditioning repeated to B*R
         feats_rep = self._repeat_feats_for_multiplicity(batch, multiplicity)
 
-        s_trunk = trunk_out["s"].detach().repeat_interleave(multiplicity, dim=0)
-        z_trunk = trunk_out["z"].detach().repeat_interleave(multiplicity, dim=0)
-        s_inputs = trunk_out["s_inputs"].detach().repeat_interleave(multiplicity, dim=0)
-        rpe = trunk_out["relative_position_encoding"].detach().repeat_interleave(multiplicity, dim=0)
+        # s_trunk = trunk_out["s"].detach().repeat_interleave(multiplicity, dim=0)
+        # z_trunk = trunk_out["z"].detach().repeat_interleave(multiplicity, dim=0)
+        # s_inputs = trunk_out["s_inputs"].detach().repeat_interleave(multiplicity, dim=0)
+        # rpe = trunk_out["relative_position_encoding"].detach().repeat_interleave(multiplicity, dim=0)
+
+        # Allow gradients to flow
+        s_trunk = trunk_out["s"].repeat_interleave(multiplicity, dim=0)
+        z_trunk = trunk_out["z"].repeat_interleave(multiplicity, dim=0)
+        s_inputs = trunk_out["s_inputs"].repeat_interleave(multiplicity, dim=0)
+        rpe = trunk_out["relative_position_encoding"].repeat_interleave(multiplicity, dim=0)
 
         # Sample starting noise
         noise = torch.randn(B * multiplicity, N, 3, device=device, dtype=s_trunk.dtype)
@@ -673,7 +681,7 @@ class Boltz1(LightningModule):
             )
 
         assert self.energy_loss is not None, "use_energy_loss is True but self.energy_loss was not instantiated."
-        print(f"{pred_coords.shape=}, {target.shape=}, {scale_override_t=}")
+        # print(f"{pred_coords.shape=}, {target.shape=}, {scale_override_t=}")
         loss_out = self.energy_loss(
             target=target,                 # [B, N, 3]
             recon=pred_coords,             # [B, R, N, 3]

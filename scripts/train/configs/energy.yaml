@@ -23,9 +23,9 @@ resume: null
 disable_checkpoint: false
 matmul_precision: null
 save_top_k: -1
-freeze_trunk: true           # freeze trunk weights when fine-tuning denoiser
+freeze_trunk: false           # freeze trunk weights when fine-tuning denoiser
 freeze_confidence: true      # freeze confidence head weights
-train_denoiser_only: true    # zero non-diffusion losses
+train_denoiser_only: false    # zero non-diffusion losses
 init_denoiser_randomly: true # initialize denoiser weights randomly (don't load from checkpoint)
 
 data:
