@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import hydra
+from datetime import datetime
 import omegaconf
 import pytorch_lightning as pl
 import torch
@@ -101,6 +102,9 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
         Any command line overrides.
 
     """
+    if not OmegaConf.has_resolver("now"):
+        OmegaConf.register_new_resolver("now", lambda fmt: datetime.now().strftime(fmt))
+
     # Load the configuration
     raw_config = omegaconf.OmegaConf.load(raw_config)
 

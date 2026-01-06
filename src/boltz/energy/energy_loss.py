@@ -7,12 +7,10 @@ import math
 
 import torch
 import torch.nn.functional as F
-import torchvision.transforms.functional as TF
+# import torchvision.transforms.functional as TF
 
 from .persistence import persistent_class
-from .misc import sg, custom_compile
-
-from utils.boltz_utils import weighted_rigid_align_centered
+from .misc import sg, custom_compile, weighted_rigid_align_centered
 
 def cdist(x, y, eps=1e-8):
     '''
@@ -201,7 +199,7 @@ def attn_loss_new(
         # e.g. mean pairwise distance in data space       # scalar
 
         info["scale"] = scale.mean()
-
+        # print(f"[DEBUG] Before scaling {scale=} {dist=}")
         scale_inputs = (scale / math.sqrt(S)).clamp_min(1e-3)  # scale to make sure coords are N[0,1]
         dist = dist / scale.clamp_min(1e-3)                    # dist_map: elts of order 1
 
@@ -210,6 +208,7 @@ def attn_loss_new(
         )
         if same_group_mask is not None:
             dist[:, :C_g, :C_g][same_group_mask] = 100
+
 
     # with torch.no_grad():
     #     dist = cdist(old_gen, targets)  # [B, C_g, C_g + C_n + C_p]
@@ -224,6 +223,8 @@ def attn_loss_new(
     #     )
     #     if same_group_mask is not None:
     #         dist[:, :C_g, :C_g][same_group_mask] = 100
+    
+    # print(f"[DEBUG] {dist=}")
 
     old_gen, targets, gen = (
         old_gen / scale_inputs,
@@ -239,6 +240,7 @@ def attn_loss_new(
             
             R_coeff = torch.zeros_like(dist)  # [B, C_g, C_g + C_n + C_p];
             affinity = (-dist / temp).softmax(dim=-1)  # [B, C_g, C_g + C_n + C_p]
+            # print(f"[DEBUG] {affinity=}")
             entropy = (-affinity * (affinity + 1e-8).log()).sum(dim=-1)
             info[f'temp_{R}'] = temp
             info[f'effective_samples_{R}'] = (entropy.mean()).exp()
