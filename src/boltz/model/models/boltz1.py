@@ -37,6 +37,7 @@ from boltz.model.modules.trunk import (
 from boltz.model.modules.utils import ExponentialMovingAverage
 from boltz.model.optim.scheduler import AlphaFoldLRScheduler
 
+from energy.utils.energy_loss import FeatureEnergyLoss
 
 class Boltz1(LightningModule):
     """Boltz1 model."""
@@ -267,6 +268,36 @@ class Boltz1(LightningModule):
             for name, param in self.named_parameters():
                 if name.split(".")[0] != "confidence_module":
                     param.requires_grad = False
+
+        # Energy loss module (no trainable params, but register as nn.Module for device handling)
+        self.use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
+
+        if self.use_energy:
+            contra_dict = getattr(self.training_args, "energy_contra_dict", None)
+            if contra_dict is None:
+                # sane defaults; override in yaml
+                contra_dict = dict(
+                    kernel_type="attn_new",
+                    R_list=[0.2],
+                    step_size=1.0,
+                    transpose_aff=False,
+                    n_sinkhorn_steps=0,
+                    has_repulsion=False,
+                    exp_affinity=False,
+                    no_ratio=False,
+                    proj_dim=0,
+                    # feature choices
+                    has_global=True,
+                    has_coord=False,
+                    local_ks=[],
+                    global_patches=[],
+                    triangle_local_ks=[],
+                )
+
+            self.energy_loss = FeatureEnergyLoss(contra_dict=contra_dict)
+        else:
+            self.energy_loss = None
+
 
     def setup(self, stage: str) -> None:
         """Set the model for training, validation and inference."""
@@ -637,16 +668,30 @@ class Boltz1(LightningModule):
 
         # Apply pad mask
         atom_pad_mask = batch["atom_pad_mask"].float()  # [B, N]
-        pred_coords = pred_coords.view(B, multiplicity, N, 3) * atom_pad_mask[:, None, :, None]
-        target = true_coords[:, None, :, :].expand(B, multiplicity, N, 3) * atom_pad_mask[:, None, :, None]
 
-        # Call your energy loss
+        pred_coords = pred_coords.view(B, multiplicity, N, 3)
+        pred_coords = pred_coords * atom_pad_mask[:, None, :, None]          # [B, R, N, 3]
+
+        target = true_coords * atom_pad_mask[:, :, None]                     # [B, N, 3]
+
+        # Make scale_override a torch scalar (or None)
+        scale_override_val = getattr(self.training_args, "energy_scale_override", None)
+        scale_override_t = None
+        if scale_override_val is not None:
+            scale_override_t = torch.tensor(
+                float(scale_override_val),
+                device=device,
+                dtype=pred_coords.dtype,
+            )
+
+        assert self.energy_loss is not None, "use_energy_loss is True but self.energy_loss was not instantiated."
+
         loss_out = self.energy_loss(
-            target=target,                 # [B, R, N, 3]
+            target=target,                 # [B, N, 3]
             recon=pred_coords,             # [B, R, N, 3]
             fixed_neg=None,
-            atom_mask=atom_pad_mask,       # [B, N] (or expand to [B,R,N] if your impl wants)
-            scale_override=scale_override,
+            atom_mask=atom_pad_mask,       # [B, N]
+            scale_override=scale_override_t,
         )
 
         if isinstance(loss_out, tuple):
