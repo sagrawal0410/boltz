@@ -197,7 +197,7 @@ def main():
     parser.add_argument(
         "--recycling-steps",
         type=int,
-        default=3,
+        default=10,
         help="Number of recycling steps (default: 3, matching validation config)"
     )
     

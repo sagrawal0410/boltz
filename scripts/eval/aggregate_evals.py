@@ -633,7 +633,7 @@ def main():
     af3_evals = eval_folder + "evals/test/af3"
 
     boltz_preds = "/data/scratch-oc40/shaurya10/predictions"
-    boltz_evals = "/data/scratch-oc40/shaurya10/boltz/eval_results"
+    boltz_evals = "/data/scratch-oc40/shaurya10/boltz/eval_results_10"
 
     boltz_preds_x = eval_folder + "outputs/test/boltzx/predictions"
     boltz_evals_x = eval_folder + "evals/test/boltzx"
