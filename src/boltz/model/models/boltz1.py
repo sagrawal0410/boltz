@@ -1,6 +1,7 @@
 import gc
 import random
 from typing import Any, Optional
+import inspect
 
 import torch
 import torch._dynamo
@@ -36,6 +37,7 @@ from boltz.model.modules.trunk import (
 from boltz.model.modules.utils import ExponentialMovingAverage
 from boltz.model.optim.scheduler import AlphaFoldLRScheduler
 
+from boltz.energy.energy_loss import FeatureEnergyLoss
 
 class Boltz1(LightningModule):
     """Boltz1 model."""
@@ -193,12 +195,12 @@ class Boltz1(LightningModule):
                 **msa_args,
             )
             # Freeze MSA module - only train denoiser
-            for param in self.msa_module.parameters():
-                param.requires_grad = False
+            # for param in self.msa_module.parameters():
+            #     param.requires_grad = False
         self.pairformer_module = PairformerModule(token_s, token_z, **pairformer_args)
         # Freeze pairformer module - only train denoiser
-        for param in self.pairformer_module.parameters():
-            param.requires_grad = False
+        # for param in self.pairformer_module.parameters():
+        #     param.requires_grad = False
         if compile_pairformer:
             # Big models hit the default cache limit (8)
             self.is_pairformer_compiled = True
@@ -266,6 +268,36 @@ class Boltz1(LightningModule):
             for name, param in self.named_parameters():
                 if name.split(".")[0] != "confidence_module":
                     param.requires_grad = False
+
+        # Energy loss module (no trainable params, but register as nn.Module for device handling)
+        self.use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
+
+        if self.use_energy:
+            contra_dict = getattr(self.training_args, "energy_contra_dict", None)
+            if contra_dict is None:
+                # sane defaults; override in yaml
+                contra_dict = dict(
+                    kernel_type="attn_new",
+                    R_list=[0.2],
+                    step_size=1.0,
+                    transpose_aff=False,
+                    n_sinkhorn_steps=0,
+                    has_repulsion=False,
+                    exp_affinity=False,
+                    no_ratio=False,
+                    proj_dim=0,
+                    # feature choices
+                    has_global=True,
+                    has_coord=False,
+                    local_ks=[],
+                    global_patches=[],
+                    triangle_local_ks=[],
+                )
+
+            self.energy_loss = FeatureEnergyLoss(contra_dict=contra_dict)
+        else:
+            self.energy_loss = None
+
 
     def setup(self, stage: str) -> None:
         """Set the model for training, validation and inference."""
@@ -350,14 +382,23 @@ class Boltz1(LightningModule):
                 "pdistogram": pdistogram,
                 "s": s,
                 "z": z,
+                "s_inputs": s_inputs,
+                "relative_position_encoding": relative_position_encoding,
             }
 
         # Detach MSA and pairformer outputs to stop gradients - only train denoiser
-        s_trunk_detached = s.detach()
-        z_trunk_detached = z.detach()
+        # s_trunk_detached = s.detach()
+        # z_trunk_detached = z.detach()
+        s_trunk_detached = s
+        z_trunk_detached = z
 
         # Compute structure module
-        if self.training and self.structure_prediction_training:
+
+        # Replaced with energy loss
+        use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
+
+        if self.training and self.structure_prediction_training and (not use_energy):
+            # original diffusion training (denoising/score matching)
             dict_out.update(
                 self.structure_module(
                     s_trunk=s_trunk_detached,
@@ -368,7 +409,7 @@ class Boltz1(LightningModule):
                     multiplicity=multiplicity_diffusion_train,
                 )
             )
-
+        
         if (not self.training) or self.confidence_prediction:
             dict_out.update(
                 self.structure_module.sample(
@@ -465,6 +506,208 @@ class Boltz1(LightningModule):
 
         return true_coords, rmsds, best_rmsds, true_coords_resolved_mask
 
+    def _repeat_feats_for_multiplicity(self, feats: dict[str, Tensor], multiplicity: int) -> dict[str, Tensor]:
+        """Repeat any tensor feat whose leading dim is B into (B*multiplicity)."""
+        if multiplicity == 1:
+            return feats
+        # Find B from a reliable key
+        if "token_index" in feats:
+            B = feats["token_index"].shape[0]
+        else:
+            # fallback: first tensor-like entry
+            B = next(v.shape[0] for v in feats.values() if torch.is_tensor(v))
+
+        out = {}
+        for k, v in feats.items():
+            if torch.is_tensor(v) and v.shape[0] == B:
+                out[k] = v.repeat_interleave(multiplicity, dim=0)
+            else:
+                out[k] = v
+        return out
+
+    def _get_denoiser_module(self) -> nn.Module:
+        """
+        Try common names used inside AtomDiffusion to access the actual denoiser network.
+        """
+        for name in ["score_model", "denoiser", "model", "net"]:
+            if hasattr(self.structure_module, name):
+                return getattr(self.structure_module, name)
+        raise AttributeError(
+            "Could not find denoiser module on self.structure_module. "
+            "Tried: score_model, denoiser, model, net. "
+            "Inspect AtomDiffusion to see what the score network is called."
+        )
+
+    def _call_denoiser(
+        self,
+        denoiser: nn.Module,
+        *,
+        x: Tensor,
+        t: Tensor,
+        s_trunk: Tensor,
+        z_trunk: Tensor,
+        s_inputs: Tensor,
+        feats: dict[str, Tensor],
+        relative_position_encoding: Tensor,
+    ) -> Any:
+        """
+        Call denoiser with only the kwargs it actually accepts.
+        """
+        fn = denoiser.forward if hasattr(denoiser, "forward") else denoiser
+        sig = inspect.signature(fn)
+
+        # Map likely parameter names -> tensors we have
+        payload = {}
+        for p in sig.parameters.keys():
+            if p in ("x", "x_t", "atom_coords", "noisy_atom_coords", "coords", "r_noisy"):
+                payload[p] = x
+            elif p in ("t", "time", "timesteps", "sigma", "noise_level", "times"):
+                payload[p] = t
+            elif p == "s_trunk":
+                payload[p] = s_trunk
+            elif p == "z_trunk":
+                payload[p] = z_trunk
+            elif p == "s_inputs":
+                payload[p] = s_inputs
+            elif p == "feats":
+                payload[p] = feats
+            elif p == "relative_position_encoding":
+                payload[p] = relative_position_encoding
+            elif p == "use_kernels":
+                payload[p] = self.use_kernels
+
+
+        return denoiser(**payload)
+
+    def _extract_pred_coords(
+        self,
+        denoiser_out: Any,
+        *,
+        noise: Tensor,
+        dt: float,
+    ) -> Tensor:
+        """
+        Interpret denoiser outputs as absolute coordinates (SET mode),
+        even if the key name is r_update.
+        """
+        if torch.is_tensor(denoiser_out):
+            return denoiser_out
+
+        if isinstance(denoiser_out, dict):
+            # Boltz denoiser returns r_update; treat it as absolute coords
+            if "r_update" in denoiser_out and torch.is_tensor(denoiser_out["r_update"]):
+                return denoiser_out["r_update"]
+
+            raise KeyError(f"Don't know how to extract coords from denoiser_out keys={list(denoiser_out.keys())}.")
+
+        raise TypeError(f"Unexpected denoiser_out type: {type(denoiser_out)}")
+
+    def _energy_one_step_and_loss(
+        self,
+        *,
+        batch: dict[str, Tensor],
+        trunk_out: dict[str, Tensor],
+        multiplicity: int,
+        batch_idx: int,
+    ) -> tuple[Tensor, dict[str, Any]]:
+        """
+        One-step: noise -> denoiser(noise, t_gen, cond) -> pred coords -> energy loss vs GT.
+        Returns: (loss_scalar, info_dict_for_logging)
+        """
+        device = batch["token_index"].device
+        B = batch["token_index"].shape[0]
+        true_coords = batch["coords"].squeeze(1)  # [B, N, 3]
+        N = true_coords.shape[-2]
+
+        t_gen = float(getattr(self.training_args, "t_gen", 1.0))
+        dt = float(getattr(self.training_args, "energy_dt", 1.0))
+        scale_override = float(getattr(self.training_args, "energy_scale_override", 256.0))
+
+        # Build conditioning repeated to B*R
+        feats_rep = self._repeat_feats_for_multiplicity(batch, multiplicity)
+
+        # s_trunk = trunk_out["s"].detach().repeat_interleave(multiplicity, dim=0)
+        # z_trunk = trunk_out["z"].detach().repeat_interleave(multiplicity, dim=0)
+        # s_inputs = trunk_out["s_inputs"].detach().repeat_interleave(multiplicity, dim=0)
+        # rpe = trunk_out["relative_position_encoding"].detach().repeat_interleave(multiplicity, dim=0)
+
+        # Allow gradients to flow
+        s_trunk = trunk_out["s"].repeat_interleave(multiplicity, dim=0)
+        z_trunk = trunk_out["z"].repeat_interleave(multiplicity, dim=0)
+        s_inputs = trunk_out["s_inputs"].repeat_interleave(multiplicity, dim=0)
+        rpe = trunk_out["relative_position_encoding"].repeat_interleave(multiplicity, dim=0)
+
+        # Sample starting noise
+        noise = torch.randn(B * multiplicity, N, 3, device=device, dtype=s_trunk.dtype)
+        t = torch.full((B * multiplicity,), t_gen, device=device, dtype=noise.dtype)
+
+        print(f"[DEBUG] Energy one-step: {noise.shape=}, {t.shape=}, {s_trunk.shape=}, {z_trunk.shape=}, {s_inputs.shape=}, {rpe.shape=}")
+
+        # Run denoiser once
+        denoiser = self._get_denoiser_module()
+        den_out = self._call_denoiser(
+            denoiser,
+            x=noise,
+            t=t,
+            s_trunk=s_trunk,
+            z_trunk=z_trunk,
+            s_inputs=s_inputs,
+            feats=feats_rep,
+            relative_position_encoding=rpe,
+        )
+        if batch_idx % 50 == 0:
+            print("den_out keys:", den_out.keys())
+            if "r_update" in den_out:
+                print("r_update shape:", den_out["r_update"].shape, den_out["r_update"].dtype)
+            print("noise shape:", noise.shape, noise.dtype)
+        pred_coords = self._extract_pred_coords(den_out, noise=noise, dt=dt)  # [B*R, N, 3]
+
+        # Apply pad mask
+        atom_pad_mask = batch["atom_pad_mask"].float()  # [B, N]
+
+        pred_coords = pred_coords.view(B, multiplicity, N, 3)
+        pred_coords = pred_coords * atom_pad_mask[:, None, :, None]          # [B, R, N, 3]
+
+        target = true_coords * atom_pad_mask[:, :, None]                     # [B, N, 3]
+
+        # Make scale_override a torch scalar (or None)
+        scale_override_val = getattr(self.training_args, "energy_scale_override", None)
+        scale_override_t = None
+        if scale_override_val is not None:
+            scale_override_t = torch.tensor(
+                float(scale_override_val),
+                device=device,
+                dtype=pred_coords.dtype,
+            )
+
+        assert self.energy_loss is not None, "use_energy_loss is True but self.energy_loss was not instantiated."
+        # print(f"{pred_coords.shape=}, {target.shape=}, {scale_override_t=}")
+        loss_out = self.energy_loss(
+            target=target,                 # [B, N, 3]
+            recon=pred_coords,             # [B, R, N, 3]
+            fixed_neg=None,
+            atom_mask=atom_pad_mask,       # [B, N]
+            scale_override=scale_override_t,
+        )
+
+        if isinstance(loss_out, tuple):
+            loss, info = loss_out
+        else:
+            loss, info = loss_out, {}
+
+        loss = loss.mean()
+
+        # Optional: attach a couple useful scalars for logging
+        with torch.no_grad():
+            info = dict(info) if isinstance(info, dict) else {}
+            info.setdefault("t_gen", t_gen)
+            info.setdefault("energy_scale_override", scale_override)
+            info["stats/avg_pred_coord_mag"] = torch.mean(torch.linalg.norm(pred_coords.reshape(-1, N, 3), dim=-1)).item()
+            info["stats/avg_true_coord_mag"] = torch.mean(torch.linalg.norm(target.reshape(-1, N, 3), dim=-1)).item()
+
+        return loss, info
+
+
     def training_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
         # Proactive memory cleanup: clear cache periodically to prevent fragmentation
         if batch_idx % 10 == 0:
@@ -498,26 +741,34 @@ class Boltz1(LightningModule):
                 out,
                 batch,
             )
-            try:
+            use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
+
+            if use_energy:
+                print(f"[DEBUG] Using energy loss instead of diffusion loss.")
+                # >>> one-step generation + energy loss (replaces denoising loss)
+                try:
+                    energy_loss, energy_info = self._energy_one_step_and_loss(
+                        batch=batch,
+                        trunk_out=out,  # contains s, z, s_inputs, relative_position_encoding from forward()
+                        multiplicity=self.training_args.diffusion_multiplicity,
+                        batch_idx=batch_idx,
+                    )
+                    diffusion_loss_dict = {"loss": energy_loss, "loss_breakdown": energy_info}
+                    print(f"[DEBUG] Energy loss: {energy_loss.item():.6f}, info: {energy_info}")
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        raise
+                    raise
+            else:
+                # >>> original diffusion denoising objective
                 diffusion_loss_dict = self.structure_module.compute_loss(
                     batch,
                     out,
                     multiplicity=self.training_args.diffusion_multiplicity,
                     **self.diffusion_loss_args,
                 )
-            except Exception as e:
-                error_msg = str(e)
-                print(f"Skipping batch {batch_idx} due to error: {e}")
-                # Clear GPU cache if out of memory error
-                if "out of memory" in error_msg.lower() or "cuda" in error_msg.lower():
-                    import gc
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                # Create zero tensors without requires_grad to avoid disconnected computation graphs
-                # They'll be handled properly in aggregation
-                device = batch["token_index"].device
-                disto_loss = torch.tensor(0.0, device=device, requires_grad=False)
-                diffusion_loss_dict = {"loss": torch.tensor(0.0, device=device, requires_grad=False), "loss_breakdown": {}}
 
         else:
             disto_loss = 0.0
@@ -617,13 +868,16 @@ class Boltz1(LightningModule):
             loss_val = torch.tensor(loss, device=device)
         
         self.log("train/distogram_loss", disto_loss_val, on_step=True, sync_dist=True)
-        self.log("train/diffusion_loss", diffusion_loss_val, on_step=True, sync_dist=True)
+        
+        metric_name = "train/energy_loss" if use_energy else "train/diffusion_loss"
+        self.log(metric_name, diffusion_loss_val, on_step=True, sync_dist=True)
+
         for k, v in diffusion_loss_dict["loss_breakdown"].items():
             if torch.is_tensor(v):
                 v = v.detach()
             else:
                 v = torch.tensor(v, device=device)
-            self.log(f"train/{k}", v, on_step=True, sync_dist=True)
+            self.log(f"energy/{k}", v, on_step=True, sync_dist=True)
 
         if self.confidence_prediction:
             self.train_confidence_loss_logger.update(
@@ -772,7 +1026,7 @@ class Boltz1(LightningModule):
             )
             # #region agent log
             import json
-            with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
+            with open('/workspace/boltz/debug/debug.log', 'a') as f:
                 f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "boltz1.py:693", "message": "all_lddt_dict keys after factored_lddt_loss", "data": {"keys": list(all_lddt_dict.keys()), "const_out_types": const.out_types, "has_modified_in_const": "modified" in const.out_types, "has_modified_in_dict": "modified" in all_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
             # #endregion
         except RuntimeError as e:  # catch out of memory exceptions
@@ -818,7 +1072,7 @@ class Boltz1(LightningModule):
             best_complex_total_dict = all_total_dict
         # #region agent log
         import json
-        with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
+        with open('/workspace/boltz/debug/debug.log', 'a') as f:
             f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "boltz1.py:734", "message": "best_lddt_dict keys before validation loop", "data": {"best_lddt_keys": list(best_lddt_dict.keys()), "const_out_types": const.out_types, "missing_keys": [k for k in const.out_types if k not in best_lddt_dict]}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
         # #endregion
 
@@ -944,8 +1198,8 @@ class Boltz1(LightningModule):
         for m in const.out_types:
             # #region agent log
             import json
-            with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if 'disto_lddt_dict' in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+            with open('/workspace/boltz/debug/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if "disto_lddt_dict" in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
             # #endregion
             # Skip "modified" as it's not computed by factored_lddt_loss
             if m == "modified":
@@ -978,7 +1232,7 @@ class Boltz1(LightningModule):
             else:
                 # #region agent log
                 import json
-                with open('/data/scratch-oc40/shaurya10/boltz/debug.log', 'a') as f:
+                with open('/workspace/boltz/debug/debug.log', 'a') as f:
                     f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
                 # #endregion
                 self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])

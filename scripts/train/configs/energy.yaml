@@ -4,7 +4,7 @@ trainer:
   precision: 32
   gradient_clip_val: 3.0
   max_epochs: -1
-  accumulate_grad_batches: 8    # to adjust depending on the number of devices
+  accumulate_grad_batches: 1    # to adjust depending on the number of devices
   log_every_n_steps: 1
   check_val_every_n_epoch: 1
   val_check_interval: 0.1
@@ -12,26 +12,27 @@ trainer:
 
 # Optional set wandb here
 wandb:
-   name: boltz
+   name: "${now:%Y-%m-%d_%H-%M-%S}"
    project: boltz-energy
    entity: mit-hair
 
-output: /data/scratch-oc40/shaurya10/boltz/checkpoints
-pretrained: /data/scratch-oc40/shaurya10/boltz1_conf.ckpt
+output: /workspace/checkpoints
+pretrained: null
+# pretrained: /workspace/checkpoints/boltz1_conf.ckpt
 resume: null
 disable_checkpoint: false
 matmul_precision: null
 save_top_k: -1
-freeze_trunk: true           # freeze trunk weights when fine-tuning denoiser
+freeze_trunk: false           # freeze trunk weights when fine-tuning denoiser
 freeze_confidence: true      # freeze confidence head weights
-train_denoiser_only: true    # zero non-diffusion losses
+train_denoiser_only: false    # zero non-diffusion losses
 init_denoiser_randomly: true # initialize denoiser weights randomly (don't load from checkpoint)
 
 data:
   datasets:
     - _target_: boltz.data.module.training.DatasetConfig
-      target_dir: /data/scratch-oc40/shaurya10/rcsb_processed_targets
-      msa_dir: /data/scratch-oc40/shaurya10/rcsb_processed_msa
+      target_dir: /workspace/datasets/rcsb_processed_targets
+      msa_dir: /workspace/datasets/rcsb_processed_msa
       prob: 0.5
       sampler:
         _target_: boltz.data.sample.cluster.ClusterSampler
@@ -41,8 +42,8 @@ data:
         max_neighborhood: 40
       split: ./scripts/train/assets/validation_ids.txt
     - _target_: boltz.data.module.training.DatasetConfig
-      target_dir: /data/scratch-oc40/shaurya10/openfold_processed_targets
-      msa_dir: /data/scratch-oc40/shaurya10/openfold_processed_msa
+      target_dir: /workspace/datasets/openfold_processed_targets
+      msa_dir: /workspace/datasets/openfold_processed_msa
       prob: 0.5
       sampler:
         _target_: boltz.data.sample.cluster.ClusterSampler
@@ -66,7 +67,7 @@ data:
   featurizer:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
-  symmetries: /data/scratch-oc40/shaurya10/boltz/empty_symmetries.pkl
+  symmetries: /workspace/datasets/symmetry.pkl
   max_tokens: 384
   max_atoms: 3072
   max_seqs: 1536
@@ -159,11 +160,11 @@ model:
   training_args:
     recycling_steps: 3
     sampling_steps: 20
-    diffusion_multiplicity: 8
+    diffusion_multiplicity: 4
     diffusion_samples: 2
     confidence_loss_weight: 0
     diffusion_loss_weight: 4.0
-    distogram_loss_weight: 0
+    distogram_loss_weight: 3e-2
     adam_beta_1: 0.9
     adam_beta_2: 0.95
     adam_eps: 0.00000001
@@ -177,7 +178,26 @@ model:
 
     use_energy_loss: true
     t_gen: 0.5
-    energy_scale_override: 20.0
+    energy_scale_override: 1024.0
+
+    # energy loss configuration passed into FeatureEnergyLoss(contra_dict=...)
+    energy_contra_dict:
+      kernel_type: attn_new
+      R_list: [0.5]
+      step_size: 1.0
+      transpose_aff: false
+      n_sinkhorn_steps: 0
+      has_repulsion: false
+      exp_affinity: false
+      no_ratio: false
+      proj_dim: 0
+
+      # feature modules
+      has_global: true
+      has_coord: false
+      local_ks: []
+      global_patches: []
+      triangle_local_ks: []
 
   validation_args:
     recycling_steps: 1

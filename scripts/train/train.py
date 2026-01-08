@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import hydra
+from datetime import datetime
 import omegaconf
 import pytorch_lightning as pl
 import torch
@@ -101,6 +102,9 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
         Any command line overrides.
 
     """
+    if not OmegaConf.has_resolver("now"):
+        OmegaConf.register_new_resolver("now", lambda fmt: datetime.now().strftime(fmt))
+
     # Load the configuration
     raw_config = omegaconf.OmegaConf.load(raw_config)
 
@@ -143,7 +147,7 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
     if cfg.pretrained and not cfg.resume:
         # Load the pretrained weights into the confidence module
         if cfg.load_confidence_from_trunk:
-            checkpoint = torch.load(cfg.pretrained, map_location="cpu")
+            checkpoint = torch.load(cfg.pretrained, map_location="cpu", weights_only=False)
             new_state_dict = {}
             # Modify parameter names in the state_dict
             for key, value in checkpoint["state_dict"].items():
@@ -171,7 +175,7 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
 
         print(f"Loading model from {file_path}")
         if cfg.init_denoiser_randomly:
-            checkpoint = torch.load(file_path, map_location="cpu")
+            checkpoint = torch.load(file_path, map_location="cpu", weights_only=False)
             filtered_state_dict = {}
             from boltz.model.utils.components import infer_component
             import torch.nn.init as init
