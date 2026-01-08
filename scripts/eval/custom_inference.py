@@ -362,6 +362,22 @@ def main():
         elif use_ema_from_checkpoint and not args.use_ema:
             print(f"  WARNING: EMA was used during training but --use-ema not set!")
             print(f"  This may significantly reduce performance. Consider using --use-ema")
+        
+        # Extract confidence-related hyperparameters (critical for confidence module initialization)
+        # These determine whether the confidence module is initialized
+        confidence_prediction_from_checkpoint = hparams.get("confidence_prediction", True)  # Default True for boltz1_conf.ckpt
+        confidence_model_args_from_checkpoint = hparams.get("confidence_model_args", {})
+        confidence_imitate_trunk_from_checkpoint = hparams.get("confidence_imitate_trunk", False)
+        alpha_pae_from_checkpoint = hparams.get("alpha_pae", 0.0)
+        
+        print(f"  confidence_prediction: {confidence_prediction_from_checkpoint}")
+        if confidence_model_args_from_checkpoint:
+            print(f"  confidence_model_args: {list(confidence_model_args_from_checkpoint.keys())}")
+        print(f"  confidence_imitate_trunk: {confidence_imitate_trunk_from_checkpoint}")
+        print(f"  alpha_pae: {alpha_pae_from_checkpoint}")
+        
+        # Store checkpoint_data for later use (for state_dict filtering)
+        checkpoint_data_for_loading = checkpoint_data
     except Exception as e:
         print(f"Warning: Could not load hyperparameters from checkpoint: {e}")
         print(f"  Using default hyperparameters")
@@ -376,6 +392,23 @@ def main():
         )
         steering_args = BoltzSteeringParams()
         use_ema_from_checkpoint = False
+        # Default confidence settings (boltz1_conf.ckpt typically has confidence_prediction=True)
+        confidence_prediction_from_checkpoint = True  # Default to True for inference
+        confidence_model_args_from_checkpoint = {}
+        confidence_imitate_trunk_from_checkpoint = False
+        alpha_pae_from_checkpoint = 0.0
+        # Load checkpoint data separately for state_dict filtering
+        checkpoint_data_for_loading = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+        # Try to extract confidence_prediction from checkpoint even if other hparams failed
+        try:
+            hparams_fallback = checkpoint_data_for_loading.get("hyper_parameters", {})
+            confidence_prediction_from_checkpoint = hparams_fallback.get("confidence_prediction", True)
+            confidence_model_args_from_checkpoint = hparams_fallback.get("confidence_model_args", {})
+            confidence_imitate_trunk_from_checkpoint = hparams_fallback.get("confidence_imitate_trunk", False)
+            alpha_pae_from_checkpoint = hparams_fallback.get("alpha_pae", 0.0)
+            print(f"  Extracted confidence_prediction from checkpoint: {confidence_prediction_from_checkpoint}")
+        except Exception:
+            print(f"  Using default confidence_prediction=True")
     
     # Predict args (matching validation settings from config)
     # Note: symmetry_correction is part of validation_args, not predict_args
@@ -397,11 +430,27 @@ def main():
     print(f"  Symmetry correction: {args.symmetry_correction} (will be set via validation_args)")
     print(f"  Using EMA weights: {args.use_ema}")
     
-    # Load checkpoint and filter out problematic msa_proj layer if size mismatch exists
-    checkpoint_state = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+    # Load checkpoint state_dict and filter out problematic msa_proj layer if size mismatch exists
+    # Use checkpoint_data_for_loading if we already loaded it, otherwise load fresh
+    if 'checkpoint_data_for_loading' not in locals():
+        checkpoint_data_for_loading = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+    
+    checkpoint_state = checkpoint_data_for_loading
     filtered_state_dict = {}
     msa_proj_weight = None
     msa_proj_bias = None
+    
+    # Check what modules are present in checkpoint
+    checkpoint_keys = list(checkpoint_state["state_dict"].keys())
+    confidence_keys = [k for k in checkpoint_keys if k.startswith("confidence_module")]
+    trunk_keys = [k for k in checkpoint_keys if k.startswith("trunk")]
+    structure_keys = [k for k in checkpoint_keys if k.startswith("structure_module")]
+    
+    print(f"\nCheckpoint contains:")
+    print(f"  Confidence module keys: {len(confidence_keys)}")
+    print(f"  Trunk keys: {len(trunk_keys)}")
+    print(f"  Structure module (denoiser) keys: {len(structure_keys)}")
+    print(f"  Total keys: {len(checkpoint_keys)}")
     
     # Check for size mismatch and filter out problematic keys
     for key, value in checkpoint_state["state_dict"].items():
@@ -428,18 +477,33 @@ def main():
         torch.save(temp_checkpoint, temp_checkpoint_path)
     
     try:
+        # Build kwargs for load_from_checkpoint, including all hyperparameters from checkpoint
+        load_kwargs = {
+            "strict": False,  # Allow partial loading
+            "predict_args": predict_args,
+            "map_location": "cpu",
+            "diffusion_process_args": asdict(diffusion_params),
+            "ema": args.use_ema,  # Use EMA weights if requested
+            "use_kernels": not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
+            "pairformer_args": asdict(pairformer_args),
+            "msa_args": asdict(msa_args),
+            "steering_args": asdict(steering_args),
+        }
+        
+        # Add confidence-related parameters if available (critical for confidence module)
+        # These must match what was used during training
+        if 'confidence_prediction_from_checkpoint' in locals():
+            load_kwargs["confidence_prediction"] = confidence_prediction_from_checkpoint
+            if confidence_model_args_from_checkpoint:
+                load_kwargs["confidence_model_args"] = confidence_model_args_from_checkpoint
+            load_kwargs["confidence_imitate_trunk"] = confidence_imitate_trunk_from_checkpoint
+            load_kwargs["alpha_pae"] = alpha_pae_from_checkpoint
+        
         # Load model from filtered checkpoint (without msa_proj)
+        # Note: load_from_checkpoint will extract other hyperparameters from checkpoint automatically
         model_module = Boltz1.load_from_checkpoint(
             temp_checkpoint_path,
-            strict=False,  # Allow partial loading
-            predict_args=predict_args,
-            map_location="cpu",
-            diffusion_process_args=asdict(diffusion_params),
-            ema=args.use_ema,  # Use EMA weights if requested
-            use_kernels=not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
-            pairformer_args=asdict(pairformer_args),
-            msa_args=asdict(msa_args),
-            steering_args=asdict(steering_args),
+            **load_kwargs,
         )
         
         # Now manually handle the msa_proj layer
@@ -476,6 +540,34 @@ def main():
     
     model_module.eval()
     print("Model loaded successfully")
+    
+    # Verify confidence module was initialized correctly
+    if hasattr(model_module, 'confidence_prediction') and model_module.confidence_prediction:
+        if hasattr(model_module, 'confidence_module') and model_module.confidence_module is not None:
+            print(f"✓ Confidence module initialized successfully")
+            # Check if confidence module has weights loaded
+            confidence_params = sum(p.numel() for p in model_module.confidence_module.parameters())
+            print(f"  Confidence module has {confidence_params:,} parameters")
+        else:
+            print(f"⚠ WARNING: confidence_prediction=True but confidence_module is None!")
+    else:
+        print(f"⚠ WARNING: confidence_prediction=False - confidence module not initialized")
+        print(f"  This will cause KeyError: 'complex_plddt' during prediction!")
+    
+    # Verify all modules have weights loaded (not just denoiser)
+    total_params = sum(p.numel() for p in model_module.parameters())
+    trunk_params = sum(p.numel() for p in model_module.trunk.parameters()) if hasattr(model_module, 'trunk') else 0
+    structure_params = sum(p.numel() for p in model_module.structure_module.parameters()) if hasattr(model_module, 'structure_module') else 0
+    confidence_params = sum(p.numel() for p in model_module.confidence_module.parameters()) if hasattr(model_module, 'confidence_module') and model_module.confidence_module is not None else 0
+    
+    print(f"\nModel parameter counts:")
+    print(f"  Total parameters: {total_params:,}")
+    if trunk_params > 0:
+        print(f"  Trunk parameters: {trunk_params:,}")
+    if structure_params > 0:
+        print(f"  Structure module (denoiser) parameters: {structure_params:,}")
+    if confidence_params > 0:
+        print(f"  Confidence module parameters: {confidence_params:,}")
     
     # Step 6: Set up inference data module
     print("\n" + "=" * 60)
