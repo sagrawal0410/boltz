@@ -20,8 +20,10 @@ Usage:
 """
 
 import argparse
+import os
 import platform
 import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Set
@@ -395,52 +397,82 @@ def main():
     print(f"  Symmetry correction: {args.symmetry_correction} (will be set via validation_args)")
     print(f"  Using EMA weights: {args.use_ema}")
     
-    # Load model from checkpoint
-    # Note: EMA weights are automatically used if ema=True and checkpoint contains EMA state
-    # The prepare_eval() method in on_predict_start() will use EMA weights if available
-    model_module = Boltz1.load_from_checkpoint(
-        str(args.checkpoint),
-        strict=False,  # Allow partial loading to handle size mismatches (e.g., token vocabulary changes)
-        predict_args=predict_args,
-        map_location="cpu",
-        diffusion_process_args=asdict(diffusion_params),
-        ema=args.use_ema,  # Use EMA weights if requested
-        use_kernels=not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
-        pairformer_args=asdict(pairformer_args),
-        msa_args=asdict(msa_args),
-        steering_args=asdict(steering_args),
-    )
+    # Load checkpoint and filter out problematic msa_proj layer if size mismatch exists
+    checkpoint_state = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+    filtered_state_dict = {}
+    msa_proj_weight = None
+    msa_proj_bias = None
     
-    # Manually handle the msa_proj size mismatch (checkpoint may have different token vocabulary size)
+    # Check for size mismatch and filter out problematic keys
+    for key, value in checkpoint_state["state_dict"].items():
+        if key == "msa_module.msa_proj.weight":
+            # Store for later manual handling
+            msa_proj_weight = value
+            # Don't add to filtered_state_dict - we'll handle it manually
+            continue
+        elif key == "msa_module.msa_proj.bias":
+            # Store for later manual handling
+            msa_proj_bias = value
+            # Don't add to filtered_state_dict - we'll handle it manually
+            continue
+        else:
+            filtered_state_dict[key] = value
+    
+    # Create a temporary checkpoint dict with filtered state_dict
+    temp_checkpoint = checkpoint_state.copy()
+    temp_checkpoint["state_dict"] = filtered_state_dict
+    
+    # Save to temporary file
+    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.ckpt') as tmp_file:
+        temp_checkpoint_path = tmp_file.name
+        torch.save(temp_checkpoint, temp_checkpoint_path)
+    
     try:
-        checkpoint_state = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
-        checkpoint_msa_proj_weight = checkpoint_state["state_dict"].get("msa_module.msa_proj.weight", None)
-        if checkpoint_msa_proj_weight is not None:
+        # Load model from filtered checkpoint (without msa_proj)
+        model_module = Boltz1.load_from_checkpoint(
+            temp_checkpoint_path,
+            strict=False,  # Allow partial loading
+            predict_args=predict_args,
+            map_location="cpu",
+            diffusion_process_args=asdict(diffusion_params),
+            ema=args.use_ema,  # Use EMA weights if requested
+            use_kernels=not args.no_kernels,  # Use optimized kernels (disable if CUDA lib issues)
+            pairformer_args=asdict(pairformer_args),
+            msa_args=asdict(msa_args),
+            steering_args=asdict(steering_args),
+        )
+        
+        # Now manually handle the msa_proj layer
+        if msa_proj_weight is not None:
             current_msa_proj_weight = model_module.msa_module.msa_proj.weight
-            if checkpoint_msa_proj_weight.shape[1] != current_msa_proj_weight.shape[1]:
+            if msa_proj_weight.shape[1] != current_msa_proj_weight.shape[1]:
                 print(f"\nHandling msa_proj size mismatch:")
-                print(f"  Checkpoint: {checkpoint_msa_proj_weight.shape}")
+                print(f"  Checkpoint: {msa_proj_weight.shape}")
                 print(f"  Current model: {current_msa_proj_weight.shape}")
                 
                 # Copy the compatible part
-                min_features = min(checkpoint_msa_proj_weight.shape[1], current_msa_proj_weight.shape[1])
-                current_msa_proj_weight.data[:, :min_features].copy_(checkpoint_msa_proj_weight[:, :min_features])
+                min_features = min(msa_proj_weight.shape[1], current_msa_proj_weight.shape[1])
+                current_msa_proj_weight.data[:, :min_features].copy_(msa_proj_weight[:, :min_features])
                 
                 # Initialize the extra feature dimension if current model has more features
-                if current_msa_proj_weight.shape[1] > checkpoint_msa_proj_weight.shape[1]:
+                if current_msa_proj_weight.shape[1] > msa_proj_weight.shape[1]:
                     import torch.nn.init as init
                     init.xavier_uniform_(current_msa_proj_weight.data[:, min_features:])
                     print(f"  Initialized {current_msa_proj_weight.shape[1] - min_features} new feature dimensions with Xavier uniform")
-                
-                # Also copy bias if it exists
-                checkpoint_msa_proj_bias = checkpoint_state["state_dict"].get("msa_module.msa_proj.bias", None)
-                if checkpoint_msa_proj_bias is not None and model_module.msa_module.msa_proj.bias is not None:
-                    if checkpoint_msa_proj_bias.shape == model_module.msa_module.msa_proj.bias.shape:
-                        model_module.msa_module.msa_proj.bias.data.copy_(checkpoint_msa_proj_bias)
-                        print(f"  Copied msa_proj bias")
-    except Exception as e:
-        print(f"Warning: Could not handle msa_proj size mismatch: {e}")
-        print(f"  Using randomly initialized msa_proj layer")
+            else:
+                # Shapes match, can copy directly
+                current_msa_proj_weight.data.copy_(msa_proj_weight)
+                print(f"  Copied msa_proj.weight (shapes matched)")
+        
+        # Handle bias if it exists
+        if msa_proj_bias is not None and model_module.msa_module.msa_proj.bias is not None:
+            if msa_proj_bias.shape == model_module.msa_module.msa_proj.bias.shape:
+                model_module.msa_module.msa_proj.bias.data.copy_(msa_proj_bias)
+                print(f"  Copied msa_proj.bias")
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_checkpoint_path):
+            os.unlink(temp_checkpoint_path)
     
     model_module.eval()
     print("Model loaded successfully")
