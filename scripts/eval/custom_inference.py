@@ -445,6 +445,8 @@ def main():
     checkpoint_state = checkpoint_data_for_loading
     msa_proj_weight = None
     msa_proj_bias = None
+    confidence_msa_proj_weight = None
+    confidence_msa_proj_bias = None
     
     # Check what modules are present in checkpoint
     checkpoint_keys = list(checkpoint_state["state_dict"].keys())
@@ -521,13 +523,23 @@ def main():
     filtered_state_dict = {}
     for key, value in checkpoint_state["state_dict"].items():
         if key == "msa_module.msa_proj.weight":
-            # Store for later manual handling
+            # Store for later manual handling (main model's msa_proj)
             msa_proj_weight = value
             # Don't add to filtered_state_dict - we'll handle it manually
             continue
         elif key == "msa_module.msa_proj.bias":
-            # Store for later manual handling
+            # Store for later manual handling (main model's msa_proj)
             msa_proj_bias = value
+            # Don't add to filtered_state_dict - we'll handle it manually
+            continue
+        elif key == "confidence_module.msa_module.msa_proj.weight":
+            # Store for later manual handling (confidence module's msa_proj)
+            confidence_msa_proj_weight = value
+            # Don't add to filtered_state_dict - we'll handle it manually
+            continue
+        elif key == "confidence_module.msa_module.msa_proj.bias":
+            # Store for later manual handling (confidence module's msa_proj)
+            confidence_msa_proj_bias = value
             # Don't add to filtered_state_dict - we'll handle it manually
             continue
         else:
@@ -640,6 +652,40 @@ def main():
             if msa_proj_bias.shape == model_module.msa_module.msa_proj.bias.shape:
                 model_module.msa_module.msa_proj.bias.data.copy_(msa_proj_bias)
                 print(f"  Copied msa_proj.bias")
+        
+        # Now manually handle the confidence module's msa_proj layer (if confidence module exists)
+        if confidence_msa_proj_weight is not None:
+            if hasattr(model_module, 'confidence_module') and model_module.confidence_module is not None:
+                if hasattr(model_module.confidence_module, 'msa_module'):
+                    current_conf_msa_proj_weight = model_module.confidence_module.msa_module.msa_proj.weight
+                    if confidence_msa_proj_weight.shape[1] != current_conf_msa_proj_weight.shape[1]:
+                        print(f"\nHandling confidence_module.msa_proj size mismatch:")
+                        print(f"  Checkpoint: {confidence_msa_proj_weight.shape}")
+                        print(f"  Current model: {current_conf_msa_proj_weight.shape}")
+                        
+                        # Copy the compatible part
+                        min_features = min(confidence_msa_proj_weight.shape[1], current_conf_msa_proj_weight.shape[1])
+                        current_conf_msa_proj_weight.data[:, :min_features].copy_(confidence_msa_proj_weight[:, :min_features])
+                        
+                        # Initialize the extra feature dimension if current model has more features
+                        if current_conf_msa_proj_weight.shape[1] > confidence_msa_proj_weight.shape[1]:
+                            import torch.nn.init as init
+                            init.xavier_uniform_(current_conf_msa_proj_weight.data[:, min_features:])
+                            print(f"  Initialized {current_conf_msa_proj_weight.shape[1] - min_features} new feature dimensions with Xavier uniform")
+                    else:
+                        # Shapes match, can copy directly
+                        current_conf_msa_proj_weight.data.copy_(confidence_msa_proj_weight)
+                        print(f"  Copied confidence_module.msa_proj.weight (shapes matched)")
+                    
+                    # Handle confidence module bias if it exists
+                    if confidence_msa_proj_bias is not None and model_module.confidence_module.msa_module.msa_proj.bias is not None:
+                        if confidence_msa_proj_bias.shape == model_module.confidence_module.msa_module.msa_proj.bias.shape:
+                            model_module.confidence_module.msa_module.msa_proj.bias.data.copy_(confidence_msa_proj_bias)
+                            print(f"  Copied confidence_module.msa_proj.bias")
+                else:
+                    print(f"\n⚠ WARNING: confidence_module.msa_proj.weight found in checkpoint but confidence_module.msa_module not found in model")
+            else:
+                print(f"\n⚠ WARNING: confidence_module.msa_proj.weight found in checkpoint but confidence_module not initialized")
     finally:
         # Clean up temporary file
         if os.path.exists(temp_checkpoint_path):
