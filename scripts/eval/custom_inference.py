@@ -197,7 +197,7 @@ def main():
     parser.add_argument(
         "--recycling-steps",
         type=int,
-        default=10,
+        default=3,
         help="Number of recycling steps (default: 3, matching validation config)"
     )
     
@@ -313,7 +313,7 @@ def main():
     
     # Try to load hyperparameters from checkpoint first
     try:
-        checkpoint_data = torch.load(str(args.checkpoint), map_location="cpu")
+        checkpoint_data = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
         hparams = checkpoint_data.get("hyper_parameters", {})
         print(f"Found hyperparameters in checkpoint")
         
@@ -400,7 +400,7 @@ def main():
     # The prepare_eval() method in on_predict_start() will use EMA weights if available
     model_module = Boltz1.load_from_checkpoint(
         str(args.checkpoint),
-        strict=True,  # Changed to True to catch parameter mismatches
+        strict=False,  # Allow partial loading to handle size mismatches (e.g., token vocabulary changes)
         predict_args=predict_args,
         map_location="cpu",
         diffusion_process_args=asdict(diffusion_params),
@@ -410,6 +410,38 @@ def main():
         msa_args=asdict(msa_args),
         steering_args=asdict(steering_args),
     )
+    
+    # Manually handle the msa_proj size mismatch (checkpoint may have different token vocabulary size)
+    try:
+        checkpoint_state = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+        checkpoint_msa_proj_weight = checkpoint_state["state_dict"].get("msa_module.msa_proj.weight", None)
+        if checkpoint_msa_proj_weight is not None:
+            current_msa_proj_weight = model_module.msa_module.msa_proj.weight
+            if checkpoint_msa_proj_weight.shape[1] != current_msa_proj_weight.shape[1]:
+                print(f"\nHandling msa_proj size mismatch:")
+                print(f"  Checkpoint: {checkpoint_msa_proj_weight.shape}")
+                print(f"  Current model: {current_msa_proj_weight.shape}")
+                
+                # Copy the compatible part
+                min_features = min(checkpoint_msa_proj_weight.shape[1], current_msa_proj_weight.shape[1])
+                current_msa_proj_weight.data[:, :min_features].copy_(checkpoint_msa_proj_weight[:, :min_features])
+                
+                # Initialize the extra feature dimension if current model has more features
+                if current_msa_proj_weight.shape[1] > checkpoint_msa_proj_weight.shape[1]:
+                    import torch.nn.init as init
+                    init.xavier_uniform_(current_msa_proj_weight.data[:, min_features:])
+                    print(f"  Initialized {current_msa_proj_weight.shape[1] - min_features} new feature dimensions with Xavier uniform")
+                
+                # Also copy bias if it exists
+                checkpoint_msa_proj_bias = checkpoint_state["state_dict"].get("msa_module.msa_proj.bias", None)
+                if checkpoint_msa_proj_bias is not None and model_module.msa_module.msa_proj.bias is not None:
+                    if checkpoint_msa_proj_bias.shape == model_module.msa_module.msa_proj.bias.shape:
+                        model_module.msa_module.msa_proj.bias.data.copy_(checkpoint_msa_proj_bias)
+                        print(f"  Copied msa_proj bias")
+    except Exception as e:
+        print(f"Warning: Could not handle msa_proj size mismatch: {e}")
+        print(f"  Using randomly initialized msa_proj layer")
+    
     model_module.eval()
     print("Model loaded successfully")
     
