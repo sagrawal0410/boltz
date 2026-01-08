@@ -448,9 +448,17 @@ def main():
     
     print(f"\nCheckpoint contains:")
     print(f"  Confidence module keys: {len(confidence_keys)}")
+    if confidence_keys:
+        print(f"    Sample confidence keys: {confidence_keys[:3]}...")
     print(f"  Trunk keys: {len(trunk_keys)}")
     print(f"  Structure module (denoiser) keys: {len(structure_keys)}")
     print(f"  Total keys: {len(checkpoint_keys)}")
+    
+    # Warn if confidence module keys are missing but confidence_prediction is True
+    if len(confidence_keys) == 0:
+        print(f"\n⚠ WARNING: No confidence_module weights found in checkpoint!")
+        print(f"  If confidence_prediction=True, the confidence module will be randomly initialized")
+        print(f"  This may cause poor performance or errors")
     
     # Check for size mismatch and filter out problematic keys
     for key, value in checkpoint_state["state_dict"].items():
@@ -468,13 +476,23 @@ def main():
             filtered_state_dict[key] = value
     
     # Create a temporary checkpoint dict with filtered state_dict
+    # IMPORTANT: Preserve all hyper_parameters so load_from_checkpoint can use them
     temp_checkpoint = checkpoint_state.copy()
     temp_checkpoint["state_dict"] = filtered_state_dict
+    
+    # Verify hyper_parameters are preserved
+    if "hyper_parameters" in temp_checkpoint:
+        temp_hparams = temp_checkpoint["hyper_parameters"]
+        print(f"\nTemp checkpoint hyper_parameters:")
+        print(f"  confidence_prediction: {temp_hparams.get('confidence_prediction', 'NOT FOUND')}")
+        print(f"  confidence_model_args present: {'confidence_model_args' in temp_hparams}")
+    else:
+        print(f"\n⚠ WARNING: No hyper_parameters in temp checkpoint!")
     
     # Save to temporary file
     with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.ckpt') as tmp_file:
         temp_checkpoint_path = tmp_file.name
-        torch.save(temp_checkpoint, temp_checkpoint_path)
+        torch.save(temp_checkpoint, tmp_file.name)
     
     try:
         # Build kwargs for load_from_checkpoint, including all hyperparameters from checkpoint
@@ -490,14 +508,36 @@ def main():
             "steering_args": asdict(steering_args),
         }
         
-        # Add confidence-related parameters if available (critical for confidence module)
-        # These must match what was used during training
+        # Add confidence-related parameters (critical for confidence module)
+        # Always pass these explicitly to ensure confidence module is initialized
+        # Default to True if not found in checkpoint (boltz1_conf.ckpt typically has it True)
         if 'confidence_prediction_from_checkpoint' in locals():
             load_kwargs["confidence_prediction"] = confidence_prediction_from_checkpoint
-            if confidence_model_args_from_checkpoint:
-                load_kwargs["confidence_model_args"] = confidence_model_args_from_checkpoint
+        else:
+            # Fallback: default to True for inference (boltz1_conf.ckpt has confidence)
+            load_kwargs["confidence_prediction"] = True
+            print(f"  WARNING: confidence_prediction not found in checkpoint, defaulting to True")
+        
+        if 'confidence_model_args_from_checkpoint' in locals() and confidence_model_args_from_checkpoint:
+            load_kwargs["confidence_model_args"] = confidence_model_args_from_checkpoint
+        else:
+            load_kwargs["confidence_model_args"] = {}
+        
+        if 'confidence_imitate_trunk_from_checkpoint' in locals():
             load_kwargs["confidence_imitate_trunk"] = confidence_imitate_trunk_from_checkpoint
+        else:
+            load_kwargs["confidence_imitate_trunk"] = False
+        
+        if 'alpha_pae_from_checkpoint' in locals():
             load_kwargs["alpha_pae"] = alpha_pae_from_checkpoint
+        else:
+            load_kwargs["alpha_pae"] = 0.0
+        
+        print(f"\nPassing to load_from_checkpoint:")
+        print(f"  confidence_prediction: {load_kwargs['confidence_prediction']}")
+        print(f"  confidence_model_args keys: {list(load_kwargs.get('confidence_model_args', {}).keys())}")
+        print(f"  confidence_imitate_trunk: {load_kwargs['confidence_imitate_trunk']}")
+        print(f"  alpha_pae: {load_kwargs['alpha_pae']}")
         
         # Load model from filtered checkpoint (without msa_proj)
         # Note: load_from_checkpoint will extract other hyperparameters from checkpoint automatically
@@ -539,20 +579,46 @@ def main():
             os.unlink(temp_checkpoint_path)
     
     model_module.eval()
+    print("\n" + "=" * 60)
     print("Model loaded successfully")
     
-    # Verify confidence module was initialized correctly
-    if hasattr(model_module, 'confidence_prediction') and model_module.confidence_prediction:
-        if hasattr(model_module, 'confidence_module') and model_module.confidence_module is not None:
-            print(f"✓ Confidence module initialized successfully")
-            # Check if confidence module has weights loaded
-            confidence_params = sum(p.numel() for p in model_module.confidence_module.parameters())
-            print(f"  Confidence module has {confidence_params:,} parameters")
+    # CRITICAL: Verify confidence module was initialized correctly
+    print(f"\nVerifying confidence module initialization:")
+    print(f"  model_module.confidence_prediction = {getattr(model_module, 'confidence_prediction', 'ATTRIBUTE NOT FOUND')}")
+    print(f"  hasattr(model_module, 'confidence_module') = {hasattr(model_module, 'confidence_module')}")
+    
+    if hasattr(model_module, 'confidence_prediction'):
+        if model_module.confidence_prediction:
+            if hasattr(model_module, 'confidence_module') and model_module.confidence_module is not None:
+                print(f"✓ Confidence module initialized successfully")
+                # Check if confidence module has weights loaded
+                confidence_params = sum(p.numel() for p in model_module.confidence_module.parameters())
+                print(f"  Confidence module has {confidence_params:,} parameters")
+                
+                # Check if confidence module has any weights that are non-zero (indicating they were loaded)
+                confidence_has_weights = False
+                for name, param in model_module.confidence_module.named_parameters():
+                    if param.requires_grad and param.numel() > 0:
+                        if torch.any(param != 0):
+                            confidence_has_weights = True
+                            break
+                print(f"  Confidence module has non-zero weights: {confidence_has_weights}")
+            else:
+                print(f"✗ ERROR: confidence_prediction=True but confidence_module is None!")
+                print(f"  This will cause KeyError: 'complex_plddt' during prediction!")
+                raise RuntimeError("Confidence module not initialized despite confidence_prediction=True")
         else:
-            print(f"⚠ WARNING: confidence_prediction=True but confidence_module is None!")
+            print(f"✗ ERROR: confidence_prediction=False - confidence module not initialized")
+            print(f"  This will cause KeyError: 'complex_plddt' during prediction!")
+            print(f"\nAttempting to fix by checking checkpoint hyperparameters...")
+            # Try to force enable confidence_prediction
+            if 'confidence_prediction_from_checkpoint' in locals() and confidence_prediction_from_checkpoint:
+                print(f"  Checkpoint had confidence_prediction=True, but model has False")
+                print(f"  This suggests load_from_checkpoint didn't use checkpoint hyperparameters correctly")
+                raise RuntimeError("Model loaded with confidence_prediction=False but checkpoint has True")
     else:
-        print(f"⚠ WARNING: confidence_prediction=False - confidence module not initialized")
-        print(f"  This will cause KeyError: 'complex_plddt' during prediction!")
+        print(f"✗ ERROR: model_module.confidence_prediction attribute not found!")
+        raise RuntimeError("Model missing confidence_prediction attribute")
     
     # Verify all modules have weights loaded (not just denoiser)
     total_params = sum(p.numel() for p in model_module.parameters())
