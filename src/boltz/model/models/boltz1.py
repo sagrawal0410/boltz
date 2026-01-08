@@ -1531,7 +1531,9 @@ class Boltz1(LightningModule):
             pred_dict["coords"] = out["sample_atom_coords"]
             pred_dict["s"] = out["s"]
             pred_dict["z"] = out["z"]
-            if self.predict_args.get("write_confidence_summary", True):
+            # Only write confidence outputs if confidence_prediction is enabled
+            # (confidence module must be initialized to produce these outputs)
+            if self.confidence_prediction and self.predict_args.get("write_confidence_summary", True):
                 pred_dict["confidence_score"] = (
                     4 * out["complex_plddt"]
                     + (
@@ -1555,9 +1557,9 @@ class Boltz1(LightningModule):
                     "plddt",
                 ]:
                     pred_dict[key] = out[key]
-            if self.predict_args.get("write_full_pae", True):
+            if self.confidence_prediction and self.predict_args.get("write_full_pae", True):
                 pred_dict["pae"] = out["pae"]
-            if self.predict_args.get("write_full_pde", False):
+            if self.confidence_prediction and self.predict_args.get("write_full_pde", False):
                 pred_dict["pde"] = out["pde"]
             return pred_dict
 

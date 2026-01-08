@@ -176,6 +176,13 @@ def main():
     )
     
     parser.add_argument(
+        "--base-checkpoint",
+        type=Path,
+        default=None,
+        help="Path to base checkpoint (boltz1_conf.ckpt) for loading missing weights (confidence module, trunk, etc.)"
+    )
+    
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("./predictions"),
@@ -436,7 +443,6 @@ def main():
         checkpoint_data_for_loading = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
     
     checkpoint_state = checkpoint_data_for_loading
-    filtered_state_dict = {}
     msa_proj_weight = None
     msa_proj_bias = None
     
@@ -454,13 +460,65 @@ def main():
     print(f"  Structure module (denoiser) keys: {len(structure_keys)}")
     print(f"  Total keys: {len(checkpoint_keys)}")
     
-    # Warn if confidence module keys are missing but confidence_prediction is True
-    if len(confidence_keys) == 0:
-        print(f"\n⚠ WARNING: No confidence_module weights found in checkpoint!")
-        print(f"  If confidence_prediction=True, the confidence module will be randomly initialized")
-        print(f"  This may cause poor performance or errors")
+    # Check if we need to load missing weights from base checkpoint
+    needs_base_checkpoint = len(confidence_keys) == 0 or len(trunk_keys) == 0
+    
+    if needs_base_checkpoint:
+        print(f"\n⚠ Checkpoint appears to be from denoiser-only training:")
+        print(f"   - Confidence module keys: {len(confidence_keys)} {'✗ MISSING' if len(confidence_keys) == 0 else '✓'}")
+        print(f"   - Trunk keys: {len(trunk_keys)} {'✗ MISSING' if len(trunk_keys) == 0 else '✓'}")
+        
+        if args.base_checkpoint is None:
+            print(f"\n✗ ERROR: Missing weights require --base-checkpoint to be specified!")
+            print(f"  Please provide the path to boltz1_conf.ckpt using --base-checkpoint")
+            print(f"  Example: --base-checkpoint /path/to/boltz1_conf.ckpt")
+            raise ValueError("Missing confidence/trunk weights. Use --base-checkpoint to provide boltz1_conf.ckpt")
+        
+        print(f"\n Loading missing weights from base checkpoint: {args.base_checkpoint}")
+        base_checkpoint = torch.load(str(args.base_checkpoint), map_location="cpu", weights_only=False)
+        base_state_dict = base_checkpoint["state_dict"]
+        base_hparams = base_checkpoint.get("hyper_parameters", {})
+        
+        # Count what's in base checkpoint
+        base_confidence_keys = [k for k in base_state_dict.keys() if k.startswith("confidence_module")]
+        base_trunk_keys = [k for k in base_state_dict.keys() if k.startswith("trunk")]
+        print(f"  Base checkpoint confidence keys: {len(base_confidence_keys)}")
+        print(f"  Base checkpoint trunk keys: {len(base_trunk_keys)}")
+        
+        # Merge: use base checkpoint as foundation, then override with retrained checkpoint
+        merged_state_dict = {}
+        
+        # First, copy all weights from base checkpoint
+        for key, value in base_state_dict.items():
+            merged_state_dict[key] = value
+        
+        # Then, override with weights from retrained checkpoint (denoiser weights)
+        override_count = 0
+        for key, value in checkpoint_state["state_dict"].items():
+            merged_state_dict[key] = value
+            override_count += 1
+        
+        print(f"  Merged state_dict: {len(merged_state_dict)} total keys")
+        print(f"  Overrode {override_count} keys from retrained checkpoint")
+        
+        # Use the merged state_dict
+        checkpoint_state["state_dict"] = merged_state_dict
+        
+        # Use confidence hyperparameters from base checkpoint
+        confidence_prediction_from_checkpoint = base_hparams.get("confidence_prediction", True)
+        confidence_model_args_from_checkpoint = base_hparams.get("confidence_model_args", {})
+        confidence_imitate_trunk_from_checkpoint = base_hparams.get("confidence_imitate_trunk", False)
+        alpha_pae_from_checkpoint = base_hparams.get("alpha_pae", 0.0)
+        
+        print(f"\n  Using hyperparameters from base checkpoint:")
+        print(f"    confidence_prediction: {confidence_prediction_from_checkpoint}")
+        print(f"    confidence_model_args keys: {list(confidence_model_args_from_checkpoint.keys())}")
+        
+        # Update checkpoint keys list for the filtering step
+        checkpoint_keys = list(checkpoint_state["state_dict"].keys())
     
     # Check for size mismatch and filter out problematic keys
+    filtered_state_dict = {}
     for key, value in checkpoint_state["state_dict"].items():
         if key == "msa_module.msa_proj.weight":
             # Store for later manual handling
@@ -479,6 +537,15 @@ def main():
     # IMPORTANT: Preserve all hyper_parameters so load_from_checkpoint can use them
     temp_checkpoint = checkpoint_state.copy()
     temp_checkpoint["state_dict"] = filtered_state_dict
+    
+    # If we used base checkpoint, update hyperparameters to enable confidence module
+    if needs_base_checkpoint and "hyper_parameters" in temp_checkpoint:
+        temp_checkpoint["hyper_parameters"]["confidence_prediction"] = confidence_prediction_from_checkpoint
+        if confidence_model_args_from_checkpoint:
+            temp_checkpoint["hyper_parameters"]["confidence_model_args"] = confidence_model_args_from_checkpoint
+        temp_checkpoint["hyper_parameters"]["confidence_imitate_trunk"] = confidence_imitate_trunk_from_checkpoint
+        temp_checkpoint["hyper_parameters"]["alpha_pae"] = alpha_pae_from_checkpoint
+        print(f"\n  Updated temp checkpoint hyperparameters for confidence module")
     
     # Verify hyper_parameters are preserved
     if "hyper_parameters" in temp_checkpoint:
