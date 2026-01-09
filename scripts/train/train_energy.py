@@ -40,6 +40,7 @@ import hydra
 import omegaconf
 import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 import torch.nn.init as init
 from omegaconf import OmegaConf, listconfig
 from pytorch_lightning import LightningModule
