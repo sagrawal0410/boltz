@@ -234,6 +234,9 @@ def attn_loss_new(
     
     # print(f"[DEBUG] {dist=}")
 
+    # Scale inputs - clamp scale_inputs more aggressively to avoid gradient explosion
+    scale_inputs = scale_inputs.clamp(min=0.1, max=100.0)
+    
     old_gen, targets, gen = (
         old_gen / scale_inputs,
         targets / scale_inputs,
@@ -328,13 +331,27 @@ def attn_loss_new(
         # Clamp force to prevent explosion
         force_across_R = force_across_R.clamp(-100, 100)
         goal = (old_gen + force_across_R * step_size).detach()
+        
+        # Check if goal has NaN
+        if torch.isnan(goal).any():
+            print("[WARNING] NaN in goal computation, using simple MSE fallback")
+            goal = fixed_pos[:, :C_g, :] / scale_inputs  # Just use target as goal
 
-    loss = ((gen - goal) ** 2).mean(dim=(-1, -2)).to(old_dtype)
+    # Compute loss with numerical stability
+    diff = gen - goal
+    # Clamp diff to prevent extreme gradients
+    diff = diff.clamp(-100, 100)
+    loss = (diff ** 2).mean(dim=(-1, -2)).to(old_dtype)
     
-    # NaN check
+    # NaN check - use simple MSE as fallback
     if torch.isnan(loss).any() or torch.isinf(loss).any():
-        print("[WARNING] NaN/Inf in attn_loss_new loss computation!")
-        loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=0.0)
+        print("[WARNING] NaN/Inf in attn_loss_new, using simple MSE fallback")
+        # Simple MSE between gen and target (scaled)
+        target_scaled = fixed_pos / scale_inputs
+        loss = ((gen - target_scaled) ** 2).mean(dim=(-1, -2)).to(old_dtype)
+        # If still NaN, return 0
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            loss = torch.zeros(B, device=gen.device, dtype=old_dtype)
     
     info["diff_base"] = ((gen - old_gen) ** 2).mean()
     return loss, info

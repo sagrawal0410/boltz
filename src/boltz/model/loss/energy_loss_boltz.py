@@ -55,7 +55,8 @@ class BoltzEnergyLoss(nn.Module):
         recon: Optional[torch.Tensor] = None,    # [B, N, 3] or [B, R, N, 3] - alias for gen_xyz
         fixed_neg: Optional[torch.Tensor] = None,# alias for neg_xyz
         atom_mask: Optional[torch.Tensor] = None,# [B, N] mask for valid atoms
-        scale_override: Optional[torch.Tensor] = None,  # not used, for interface compatibility
+        scale_override: Optional[torch.Tensor] = None,  # scale override for loss
+        use_simple_mse: bool = False,  # Use simple MSE loss instead of complex energy loss
     ) -> Tuple[torch.Tensor, Dict]:
         """Compute the energy loss.
 
@@ -111,7 +112,7 @@ class BoltzEnergyLoss(nn.Module):
                 atom_mask_rep = None
             
             # Compute loss on flattened batch
-            loss, info = self._compute_loss(gen_xyz_flat, ref_xyz_rep, neg_xyz, atom_mask_rep, scale_override)
+            loss, info = self._compute_loss(gen_xyz_flat, ref_xyz_rep, neg_xyz, atom_mask_rep, scale_override, use_simple_mse)
             
             # Reshape loss back to [B, R] then mean
             if loss.dim() > 0 and loss.numel() == B * R:
@@ -122,7 +123,7 @@ class BoltzEnergyLoss(nn.Module):
             return loss, info
         else:
             # Standard [B, N, 3] case
-            return self._compute_loss(gen_xyz, ref_xyz, neg_xyz, atom_mask, scale_override)
+            return self._compute_loss(gen_xyz, ref_xyz, neg_xyz, atom_mask, scale_override, use_simple_mse)
 
     def _compute_loss(
         self,
@@ -131,6 +132,7 @@ class BoltzEnergyLoss(nn.Module):
         neg_xyz: Optional[torch.Tensor],
         atom_mask: Optional[torch.Tensor],
         scale_override: Optional[torch.Tensor] = None,
+        use_simple_mse: bool = False,
     ) -> Tuple[torch.Tensor, Dict]:
         """Core loss computation."""
         
@@ -181,9 +183,12 @@ class BoltzEnergyLoss(nn.Module):
         loss_kwargs = dict(self.loss_kwargs)
         if scale_override is not None:
             loss_kwargs["scale_override"] = scale_override
-
-        # Compute loss
-        if self.use_contra:
+        
+        if use_simple_mse:
+            # Simple MSE loss for debugging
+            loss = ((gen_feat - pos_feat) ** 2).mean()
+            info = {"simple_mse": True}
+        elif self.use_contra:
             loss, info = attn_contra_loss(
                 target=pos_feat,
                 recon=gen_feat,
@@ -200,11 +205,17 @@ class BoltzEnergyLoss(nn.Module):
 
         # Check for NaN in loss and handle gracefully
         if torch.isnan(loss).any() or torch.isinf(loss).any():
-            print(f"[WARNING] NaN/Inf in loss! Returning zero loss for this batch.")
-            loss = torch.zeros_like(loss)
+            print(f"[WARNING] NaN/Inf in loss! Using simple MSE fallback.")
+            # Fallback to simple MSE
+            loss = ((gen_feat - pos_feat) ** 2).mean()
             info["nan_detected"] = 1.0
+            info["used_mse_fallback"] = 1.0
+            
+            # If still NaN, return zero
+            if torch.isnan(loss) or torch.isinf(loss):
+                loss = torch.tensor(0.0, device=gen_feat.device, dtype=gen_feat.dtype, requires_grad=True)
         else:
             info["nan_detected"] = 0.0
 
-        return loss.mean(), info
+        return loss.mean() if loss.dim() > 0 else loss, info
 

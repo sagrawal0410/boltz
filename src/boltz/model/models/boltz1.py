@@ -695,13 +695,17 @@ class Boltz1(LightningModule):
             )
 
         assert self.energy_loss is not None, "use_energy_loss is True but self.energy_loss was not instantiated."
-        # print(f"{pred_coords.shape=}, {target.shape=}, {scale_override_t=}")
+        
+        # Use simple MSE for first few steps to warm up training
+        use_simple_mse = batch_idx < 100  # Use simple MSE for first 100 steps
+        
         loss_out = self.energy_loss(
             target=target,                 # [B, N, 3]
             recon=pred_coords,             # [B, R, N, 3]
             fixed_neg=None,
             atom_mask=atom_pad_mask,       # [B, N]
             scale_override=scale_override_t,
+            use_simple_mse=use_simple_mse,  # Warm-up with simple MSE
         )
 
         if isinstance(loss_out, tuple):
@@ -798,17 +802,24 @@ class Boltz1(LightningModule):
             if use_energy:
                 # >>> one-step generation + energy loss (replaces denoising loss)
                 try:
-                    energy_loss, energy_info = self._energy_one_step_and_loss(
-                        batch=batch,
-                        trunk_out=out,  # contains s, z, s_inputs, relative_position_encoding from forward()
-                        multiplicity=self.training_args.diffusion_multiplicity,
-                        batch_idx=batch_idx,
-                    )
+                    # Enable anomaly detection for first few steps to debug NaN
+                    use_anomaly_detection = batch_idx < 3
+                    with torch.autograd.set_detect_anomaly(use_anomaly_detection):
+                        energy_loss, energy_info = self._energy_one_step_and_loss(
+                            batch=batch,
+                            trunk_out=out,  # contains s, z, s_inputs, relative_position_encoding from forward()
+                            multiplicity=self.training_args.diffusion_multiplicity,
+                            batch_idx=batch_idx,
+                        )
                     
                     # NaN detection and handling
                     if torch.isnan(energy_loss) or torch.isinf(energy_loss):
                         print(f"[WARNING] NaN/Inf detected in energy_loss at step {batch_idx}! Setting to 0.")
-                        energy_loss = torch.tensor(0.0, device=energy_loss.device, dtype=energy_loss.dtype, requires_grad=True)
+                        # Create loss connected to model params
+                        for param in self.structure_module.parameters():
+                            if param.requires_grad:
+                                energy_loss = 0.0 * param.sum()
+                                break
                         energy_info["nan_in_loss"] = 1.0
                     
                     diffusion_loss_dict = {"loss": energy_loss, "loss_breakdown": energy_info}
@@ -1016,10 +1027,13 @@ class Boltz1(LightningModule):
         """Check for NaN/Inf gradients before optimizer step and zero them out."""
         nan_count = 0
         inf_count = 0
+        nan_params = []
         for name, param in self.named_parameters():
             if param.grad is not None:
                 if torch.isnan(param.grad).any():
                     nan_count += 1
+                    if len(nan_params) < 5:  # Only log first 5
+                        nan_params.append(name)
                     param.grad = torch.zeros_like(param.grad)
                 elif torch.isinf(param.grad).any():
                     inf_count += 1
@@ -1027,6 +1041,8 @@ class Boltz1(LightningModule):
         
         if nan_count > 0 or inf_count > 0:
             print(f"[WARNING] Found {nan_count} NaN and {inf_count} Inf gradients - zeroed them out")
+            if nan_params:
+                print(f"  First NaN params: {nan_params}")
 
     def gradient_norm(self, module) -> float:
         parameters = filter(lambda p: p.requires_grad and p.grad is not None, module.parameters())
