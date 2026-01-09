@@ -1693,7 +1693,7 @@ class Boltz1(LightningModule):
         elif self.use_ema:
             self.ema.to(self.device)
         
-        # Log energy loss configuration to W&B
+        # Log energy loss configuration to W&B (print only, logging to W&B config is done in train_energy.py)
         if self.use_energy and self.energy_loss is not None:
             energy_config = {
                 "energy_loss/enabled": True,
@@ -1709,11 +1709,7 @@ class Boltz1(LightningModule):
                 elif isinstance(v, list):
                     energy_config[f"energy_loss/{k}"] = str(v)
             
-            # Log all config values
-            for k, v in energy_config.items():
-                self.log(k, v if isinstance(v, (int, float)) else 0.0, on_step=False, on_epoch=False)
-            
-            # Print config summary
+            # Print config summary (W&B config logging is handled in train_energy.py)
             print("\n" + "=" * 60)
             print("Energy Loss Configuration:")
             for k, v in energy_config.items():
