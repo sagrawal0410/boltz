@@ -9,7 +9,7 @@ import torch.nn as nn
 from einops import rearrange
 
 # Import from boltz.energy.energy_loss (local copy, no external dependency)
-from boltz.energy.energy_loss import attn_loss_new, attn_contra_loss
+from src.boltz.energy.energy_loss import attn_loss_new, attn_contra_loss
 
 
 class BoltzEnergyLoss(nn.Module):
