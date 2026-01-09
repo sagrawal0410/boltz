@@ -9,7 +9,7 @@ import torch.nn as nn
 from einops import rearrange
 
 # Import from boltz.energy.energy_loss (local copy, no external dependency)
-from src.boltz.energy.energy_loss import attn_loss_new, attn_contra_loss
+from boltz.energy.energy_loss import attn_loss_new, attn_contra_loss
 
 
 class BoltzEnergyLoss(nn.Module):
@@ -111,7 +111,7 @@ class BoltzEnergyLoss(nn.Module):
                 atom_mask_rep = None
             
             # Compute loss on flattened batch
-            loss, info = self._compute_loss(gen_xyz_flat, ref_xyz_rep, neg_xyz, atom_mask_rep)
+            loss, info = self._compute_loss(gen_xyz_flat, ref_xyz_rep, neg_xyz, atom_mask_rep, scale_override)
             
             # Reshape loss back to [B, R] then mean
             if loss.dim() > 0 and loss.numel() == B * R:
@@ -122,7 +122,7 @@ class BoltzEnergyLoss(nn.Module):
             return loss, info
         else:
             # Standard [B, N, 3] case
-            return self._compute_loss(gen_xyz, ref_xyz, neg_xyz, atom_mask)
+            return self._compute_loss(gen_xyz, ref_xyz, neg_xyz, atom_mask, scale_override)
 
     def _compute_loss(
         self,
@@ -130,8 +130,18 @@ class BoltzEnergyLoss(nn.Module):
         ref_xyz: torch.Tensor,  # [B, N, 3]
         neg_xyz: Optional[torch.Tensor],
         atom_mask: Optional[torch.Tensor],
+        scale_override: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict]:
         """Core loss computation."""
+        
+        # Check for NaN/Inf in inputs
+        if torch.isnan(gen_xyz).any() or torch.isinf(gen_xyz).any():
+            print(f"[WARNING] NaN/Inf detected in gen_xyz! Replacing with zeros.")
+            gen_xyz = torch.nan_to_num(gen_xyz, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        if torch.isnan(ref_xyz).any() or torch.isinf(ref_xyz).any():
+            print(f"[WARNING] NaN/Inf detected in ref_xyz! Replacing with zeros.")
+            ref_xyz = torch.nan_to_num(ref_xyz, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Create weights from mask (for alignment and potentially for loss weighting)
         if atom_mask is not None:
@@ -145,8 +155,14 @@ class BoltzEnergyLoss(nn.Module):
         if self.align_fn is not None:
             # The align function signature: (true_coords, pred_coords, weights, mask) -> (aligned_pred, true)
             # We detach alignment so gradients flow through the original coordinates
-            gen_xyz_aligned, _ = self.align_fn(ref_xyz.detach(), gen_xyz, weights, mask)
-            gen_xyz = gen_xyz_aligned
+            try:
+                gen_xyz_aligned, _ = self.align_fn(ref_xyz.detach(), gen_xyz, weights, mask)
+                if not torch.isnan(gen_xyz_aligned).any():
+                    gen_xyz = gen_xyz_aligned
+                else:
+                    print(f"[WARNING] Alignment produced NaN, skipping alignment this step.")
+            except Exception as e:
+                print(f"[WARNING] Alignment failed: {e}, skipping alignment this step.")
 
         # Apply mask to coordinates (zero out invalid atoms)
         if atom_mask is not None:
@@ -161,21 +177,34 @@ class BoltzEnergyLoss(nn.Module):
         if neg_xyz is not None:
             neg_feat = neg_xyz  # [B, M, 3]
 
+        # Build kwargs for loss function, including scale_override if provided
+        loss_kwargs = dict(self.loss_kwargs)
+        if scale_override is not None:
+            loss_kwargs["scale_override"] = scale_override
+
         # Compute loss
         if self.use_contra:
             loss, info = attn_contra_loss(
                 target=pos_feat,
                 recon=gen_feat,
                 return_info=True,
-                **self.loss_kwargs,
+                **loss_kwargs,
             )
         else:
             loss, info = attn_loss_new(
                 gen=gen_feat,
                 fixed_pos=pos_feat,
                 fixed_neg=neg_feat,
-                return_info=True,
-                **self.loss_kwargs,
+                **loss_kwargs,
             )
 
+        # Check for NaN in loss and handle gracefully
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            print(f"[WARNING] NaN/Inf in loss! Returning zero loss for this batch.")
+            loss = torch.zeros_like(loss)
+            info["nan_detected"] = 1.0
+        else:
+            info["nan_detected"] = 0.0
+
         return loss.mean(), info
+

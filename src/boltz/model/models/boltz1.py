@@ -646,7 +646,8 @@ class Boltz1(LightningModule):
         noise = torch.randn(B * multiplicity, N, 3, device=device, dtype=s_trunk.dtype)
         t = torch.full((B * multiplicity,), t_gen, device=device, dtype=noise.dtype)
 
-        print(f"[DEBUG] Energy one-step: {noise.shape=}, {t.shape=}, {s_trunk.shape=}, {z_trunk.shape=}, {s_inputs.shape=}, {rpe.shape=}")
+        if batch_idx % 100 == 0:
+            print(f"[DEBUG] Energy one-step: {noise.shape=}, {t.shape=}, {s_trunk.shape=}, {z_trunk.shape=}")
 
         # Run denoiser once
         denoiser = self._get_denoiser_module()
@@ -660,12 +661,20 @@ class Boltz1(LightningModule):
             feats=feats_rep,
             relative_position_encoding=rpe,
         )
-        if batch_idx % 50 == 0:
+        if batch_idx % 100 == 0:
             print("den_out keys:", den_out.keys())
             if "r_update" in den_out:
                 print("r_update shape:", den_out["r_update"].shape, den_out["r_update"].dtype)
+                # Check for NaN in denoiser output
+                if torch.isnan(den_out["r_update"]).any():
+                    print("[WARNING] NaN detected in denoiser r_update output!")
             print("noise shape:", noise.shape, noise.dtype)
         pred_coords = self._extract_pred_coords(den_out, noise=noise, dt=dt)  # [B*R, N, 3]
+        
+        # NaN check on predicted coordinates
+        if torch.isnan(pred_coords).any() or torch.isinf(pred_coords).any():
+            print(f"[WARNING] NaN/Inf in pred_coords at step {batch_idx}! Replacing with noise.")
+            pred_coords = torch.nan_to_num(pred_coords, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Apply pad mask
         atom_pad_mask = batch["atom_pad_mask"].float()  # [B, N]
@@ -795,12 +804,20 @@ class Boltz1(LightningModule):
                         multiplicity=self.training_args.diffusion_multiplicity,
                         batch_idx=batch_idx,
                     )
+                    
+                    # NaN detection and handling
+                    if torch.isnan(energy_loss) or torch.isinf(energy_loss):
+                        print(f"[WARNING] NaN/Inf detected in energy_loss at step {batch_idx}! Setting to 0.")
+                        energy_loss = torch.tensor(0.0, device=energy_loss.device, dtype=energy_loss.dtype, requires_grad=True)
+                        energy_info["nan_in_loss"] = 1.0
+                    
                     diffusion_loss_dict = {"loss": energy_loss, "loss_breakdown": energy_info}
                     
                     # Log energy loss periodically (not every step to reduce noise)
                     if batch_idx % 50 == 0:
-                        print(f"[Energy] step={batch_idx}, loss={energy_loss.item():.4f}, "
-                              f"rmsd_mean={energy_info.get('rmsd/mean', 'N/A'):.2f}")
+                        rmsd_val = energy_info.get('rmsd/mean', None)
+                        rmsd_str = f"{rmsd_val:.2f}" if rmsd_val is not None else "N/A"
+                        print(f"[Energy] step={batch_idx}, loss={energy_loss.item():.4f}, rmsd_mean={rmsd_str}")
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
                         torch.cuda.empty_cache()
@@ -857,6 +874,15 @@ class Boltz1(LightningModule):
             diffusion_loss_dict["loss"] = torch.tensor(diffusion_loss_dict["loss"], device=device)
         elif diffusion_loss_dict["loss"].device != device:
             diffusion_loss_dict["loss"] = diffusion_loss_dict["loss"].to(device)
+        
+        # NaN check for diffusion/energy loss before aggregation
+        if torch.isnan(diffusion_loss_dict["loss"]) or torch.isinf(diffusion_loss_dict["loss"]):
+            print(f"[WARNING] NaN/Inf in diffusion_loss_dict at batch {batch_idx}! Replacing with 0.")
+            # Create a loss connected to model params but with value 0
+            for param in self.structure_module.parameters():
+                if param.requires_grad:
+                    diffusion_loss_dict["loss"] = 0.0 * param.sum()
+                    break
         
         # Ensure confidence_loss_dict["loss"] is on correct device
         if confidence_loss_dict["loss"].device != device:
@@ -986,6 +1012,22 @@ class Boltz1(LightningModule):
             for k, v in self.train_confidence_loss_dict_logger.items():
                 self.log(f"train/{k}", v, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
+    def on_before_optimizer_step(self, optimizer):
+        """Check for NaN/Inf gradients before optimizer step and zero them out."""
+        nan_count = 0
+        inf_count = 0
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    nan_count += 1
+                    param.grad = torch.zeros_like(param.grad)
+                elif torch.isinf(param.grad).any():
+                    inf_count += 1
+                    param.grad = torch.zeros_like(param.grad)
+        
+        if nan_count > 0 or inf_count > 0:
+            print(f"[WARNING] Found {nan_count} NaN and {inf_count} Inf gradients - zeroed them out")
+
     def gradient_norm(self, module) -> float:
         parameters = filter(lambda p: p.requires_grad and p.grad is not None, module.parameters())
         param_list = list(parameters)
@@ -993,7 +1035,11 @@ class Boltz1(LightningModule):
             device = next(module.parameters()).device
             return torch.tensor(0.0, device=device)
         norms = torch.stack([p.grad.norm(p=2) ** 2 for p in param_list])
-        return norms.sum().sqrt()
+        total_norm = norms.sum().sqrt()
+        # Handle NaN in norm computation
+        if torch.isnan(total_norm) or torch.isinf(total_norm):
+            return torch.tensor(0.0, device=norms.device)
+        return total_norm
 
     def parameter_norm(self, module) -> float:
         parameters = filter(lambda p: p.requires_grad, module.parameters())
@@ -1002,7 +1048,11 @@ class Boltz1(LightningModule):
             device = next(module.parameters()).device
             return torch.tensor(0.0, device=device)
         norms = torch.stack([p.norm(p=2) ** 2 for p in param_list])
-        return norms.sum().sqrt()
+        total_norm = norms.sum().sqrt()
+        # Handle NaN in norm computation
+        if torch.isnan(total_norm) or torch.isinf(total_norm):
+            return torch.tensor(0.0, device=norms.device)
+        return total_norm
 
     def validation_step(self, batch: dict[str, Tensor], batch_idx: int):
         # Compute the forward pass

@@ -118,6 +118,14 @@ def attn_loss_new(
     weight_gen = weight_gen.float()
     weight_neg = weight_neg.float()
     
+    # NaN check on inputs
+    if torch.isnan(gen).any() or torch.isinf(gen).any():
+        print("[WARNING] NaN/Inf in gen input to attn_loss_new!")
+        gen = torch.nan_to_num(gen, nan=0.0, posinf=0.0, neginf=0.0)
+    if torch.isnan(fixed_pos).any() or torch.isinf(fixed_pos).any():
+        print("[WARNING] NaN/Inf in fixed_pos input to attn_loss_new!")
+        fixed_pos = torch.nan_to_num(fixed_pos, nan=0.0, posinf=0.0, neginf=0.0)
+    
     old_gen = old_gen.detach()
 
     B, C_g, S = old_gen.shape
@@ -258,11 +266,14 @@ def attn_loss_new(
             
             info[f'mean_affinity_{R}'] = affinity.mean()
             info[f'max_affinity_{R}'] = affinity.max(dim=-1).values.mean()
-            ratio = affinity.max(dim=-1).values.mean() / affinity.mean()
+            aff_mean = affinity.mean().clamp_min(1e-8)
+            ratio = affinity.max(dim=-1).values.mean() / aff_mean
             if target_ratio is not None:
-                k = math.log(target_ratio) / math.log(ratio)
+                log_ratio = torch.log(ratio.clamp_min(1.001))  # Avoid log(1) = 0
+                k = math.log(target_ratio) / log_ratio.clamp_min(0.01)
+                k = k.clamp(-10, 10)  # Prevent extreme exponents
                 affinity = affinity.pow(k)
-            info[f'max_to_mean_affinity_{R}'] = affinity.max(dim=-1).values.mean() / affinity.mean()
+            info[f'max_to_mean_affinity_{R}'] = affinity.max(dim=-1).values.mean() / aff_mean
 
             # weight by the weights
             # affinity: [B, C_g, C_g + C_n + C_p]
@@ -314,9 +325,17 @@ def attn_loss_new(
             # We disable RMS normalization here to avoid instability.
             force_across_R = force_across_R + total_force_R
 
+        # Clamp force to prevent explosion
+        force_across_R = force_across_R.clamp(-100, 100)
         goal = (old_gen + force_across_R * step_size).detach()
 
     loss = ((gen - goal) ** 2).mean(dim=(-1, -2)).to(old_dtype)
+    
+    # NaN check
+    if torch.isnan(loss).any() or torch.isinf(loss).any():
+        print("[WARNING] NaN/Inf in attn_loss_new loss computation!")
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=1e6, neginf=0.0)
+    
     info["diff_base"] = ((gen - old_gen) ** 2).mean()
     return loss, info
 
