@@ -137,6 +137,11 @@ class BoltzEnergyLoss(nn.Module):
         """Core loss computation."""
         
         # Check for NaN/Inf in inputs
+        # Clamp coordinates to reasonable range before processing
+        # This prevents extreme values that can cause NaN gradients
+        gen_xyz = gen_xyz.clamp(-500, 500)
+        ref_xyz = ref_xyz.clamp(-500, 500)
+        
         if torch.isnan(gen_xyz).any() or torch.isinf(gen_xyz).any():
             print(f"[WARNING] NaN/Inf detected in gen_xyz! Replacing with zeros.")
             gen_xyz = torch.nan_to_num(gen_xyz, nan=0.0, posinf=0.0, neginf=0.0)

@@ -136,10 +136,15 @@ class TrainConfig:
 # Utilities
 # ---------------------------------------------------------------------------
 
-def _kaiming_init_param(param: torch.nn.Parameter) -> None:
-    """Apply Kaiming uniform (weights) or zeros (biases)."""
+def _kaiming_init_param(param: torch.nn.Parameter, scale: float = 0.1) -> None:
+    """Re-initialise a parameter with scaled Xavier uniform for stability.
+    
+    Use smaller scale than default to prevent NaN gradients in early training.
+    """
     if param.dim() >= 2:
-        init.kaiming_uniform_(param, a=math.sqrt(5))
+        # Use xavier with small scale for numerical stability
+        init.xavier_uniform_(param)
+        param.data *= scale  # Scale down to prevent extreme activations
     else:
         init.zeros_(param)
 
@@ -436,6 +441,26 @@ def train(raw_config_path: str, cli_overrides: list[str]) -> None:  # noqa: C901
 
     if not cfg.strict_loading:
         model_module.strict_loading = False
+
+    # -------------------------------------------------------------------------
+    # Increase LayerNorm epsilon for numerical stability
+    # This helps prevent NaN gradients from random denoiser initialization
+    # -------------------------------------------------------------------------
+    def increase_layernorm_eps(module, eps=1e-4):
+        """Recursively increase epsilon in LayerNorm layers."""
+        count = 0
+        for name, child in module.named_modules():
+            if isinstance(child, nn.LayerNorm):
+                old_eps = child.eps
+                child.eps = max(child.eps, eps)
+                if child.eps != old_eps:
+                    count += 1
+        return count
+    
+    # Only apply to structure_module (denoiser) to maintain frozen parts unchanged
+    if hasattr(model_module, 'structure_module'):
+        modified = increase_layernorm_eps(model_module.structure_module, eps=1e-4)
+        print(f"[INFO] Increased LayerNorm eps to 1e-4 in {modified} layers of structure_module")
 
     # -------------------------------------------------------------------------
     # Run

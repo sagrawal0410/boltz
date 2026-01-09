@@ -1,4 +1,5 @@
 import gc
+import math
 import random
 from typing import Any, Optional
 import inspect
@@ -641,9 +642,18 @@ class Boltz1(LightningModule):
         z_trunk = trunk_out["z"].repeat_interleave(multiplicity, dim=0)
         s_inputs = trunk_out["s_inputs"].repeat_interleave(multiplicity, dim=0)
         rpe = trunk_out["relative_position_encoding"].repeat_interleave(multiplicity, dim=0)
+        
+        # Check for NaN/Inf in conditioning and clamp if needed
+        if torch.isnan(s_trunk).any() or torch.isinf(s_trunk).any():
+            print(f"[WARNING] NaN/Inf in s_trunk at step {batch_idx}!")
+            s_trunk = torch.nan_to_num(s_trunk, nan=0.0, posinf=10.0, neginf=-10.0)
+        if torch.isnan(z_trunk).any() or torch.isinf(z_trunk).any():
+            print(f"[WARNING] NaN/Inf in z_trunk at step {batch_idx}!")
+            z_trunk = torch.nan_to_num(z_trunk, nan=0.0, posinf=10.0, neginf=-10.0)
 
-        # Sample starting noise
+        # Sample starting noise (clamp to prevent extreme values)
         noise = torch.randn(B * multiplicity, N, 3, device=device, dtype=s_trunk.dtype)
+        noise = noise.clamp(-5, 5)  # Clamp noise to prevent extreme starting points
         t = torch.full((B * multiplicity,), t_gen, device=device, dtype=noise.dtype)
 
         if batch_idx % 100 == 0:
@@ -1024,23 +1034,29 @@ class Boltz1(LightningModule):
                 self.log(f"train/{k}", v, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
     def on_before_optimizer_step(self, optimizer):
-        """Check for NaN/Inf gradients before optimizer step and zero them out."""
+        """Check for NaN/Inf gradients before optimizer step and clip them."""
         nan_count = 0
         inf_count = 0
         nan_params = []
+        max_grad_norm = 0.0
+        
         for name, param in self.named_parameters():
             if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                max_grad_norm = max(max_grad_norm, grad_norm if not (math.isnan(grad_norm) or math.isinf(grad_norm)) else 0)
+                
                 if torch.isnan(param.grad).any():
                     nan_count += 1
                     if len(nan_params) < 5:  # Only log first 5
                         nan_params.append(name)
-                    param.grad = torch.zeros_like(param.grad)
+                    # Set to small random gradients instead of zero to allow some learning
+                    param.grad = torch.randn_like(param.grad) * 1e-6
                 elif torch.isinf(param.grad).any():
                     inf_count += 1
-                    param.grad = torch.zeros_like(param.grad)
+                    param.grad = torch.clamp(param.grad, -1e3, 1e3)
         
         if nan_count > 0 or inf_count > 0:
-            print(f"[WARNING] Found {nan_count} NaN and {inf_count} Inf gradients - zeroed them out")
+            print(f"[WARNING] Found {nan_count} NaN and {inf_count} Inf gradients (max_norm={max_grad_norm:.2f})")
             if nan_params:
                 print(f"  First NaN params: {nan_params}")
 
