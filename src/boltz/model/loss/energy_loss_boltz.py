@@ -2,19 +2,61 @@
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
 
-# Re-use the attention losses implemented for nn_flow
-try:
-    from nn_flow.energy_loss import attn_loss_new, attn_contra_loss
-except ImportError as e:
-    raise ImportError(
-        "Could not import nn_flow.energy_loss. Make sure nn_flow is in your PYTHONPATH."
-    ) from e
+# Lazy import of nn_flow - will be imported when needed
+_attn_loss_new = None
+_attn_contra_loss = None
+
+
+def _ensure_nn_flow_imported():
+    """Lazy import of nn_flow.energy_loss functions."""
+    global _attn_loss_new, _attn_contra_loss
+    
+    if _attn_loss_new is not None and _attn_contra_loss is not None:
+        return  # Already imported
+    
+    # Try to import
+    try:
+        from nn_flow.energy_loss import attn_loss_new, attn_contra_loss
+        _attn_loss_new = attn_loss_new
+        _attn_contra_loss = attn_contra_loss
+    except ImportError:
+        # Try adding workspace root to PYTHONPATH if nn_flow is in the workspace
+        # Search upward from current file to find directory containing nn_flow
+        current = Path(__file__).resolve().parent
+        workspace_root = None
+        for _ in range(10):  # Search up to 10 levels
+            nn_flow_path = current / "nn_flow"
+            if nn_flow_path.exists() and (nn_flow_path / "energy_loss.py").exists():
+                workspace_root = current
+                break
+            if current == current.parent:  # Reached filesystem root
+                break
+            current = current.parent
+        
+        if workspace_root is not None and str(workspace_root) not in sys.path:
+            sys.path.insert(0, str(workspace_root))
+            try:
+                from nn_flow.energy_loss import attn_loss_new, attn_contra_loss
+                _attn_loss_new = attn_loss_new
+                _attn_contra_loss = attn_contra_loss
+            except ImportError as e:
+                raise ImportError(
+                    f"Could not import nn_flow.energy_loss. "
+                    f"Tried adding {workspace_root} to PYTHONPATH but still failed. "
+                    f"Make sure nn_flow is in your PYTHONPATH or in the workspace root."
+                ) from e
+        else:
+            raise ImportError(
+                "Could not import nn_flow.energy_loss. Make sure nn_flow is in your PYTHONPATH."
+            )
 
 
 class BoltzEnergyLoss(nn.Module):
@@ -166,16 +208,19 @@ class BoltzEnergyLoss(nn.Module):
         if neg_xyz is not None:
             neg_feat = neg_xyz  # [B, M, 3]
 
+        # Lazy import nn_flow functions
+        _ensure_nn_flow_imported()
+        
         # Compute loss
         if self.use_contra:
-            loss, info = attn_contra_loss(
+            loss, info = _attn_contra_loss(
                 target=pos_feat,
                 recon=gen_feat,
                 return_info=True,
                 **self.loss_kwargs,
             )
         else:
-            loss, info = attn_loss_new(
+            loss, info = _attn_loss_new(
                 gen=gen_feat,
                 fixed_pos=pos_feat,
                 fixed_neg=neg_feat,

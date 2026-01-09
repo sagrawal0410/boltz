@@ -1,1 +1,0 @@
-echo "pull successfully! now run the command"
