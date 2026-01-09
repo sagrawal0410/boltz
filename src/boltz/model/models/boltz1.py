@@ -1071,9 +1071,13 @@ class Boltz1(LightningModule):
                 multiplicity=n_samples,
             )
             # #region agent log
-            import json
-            with open('/workspace/boltz/debug/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "boltz1.py:693", "message": "all_lddt_dict keys after factored_lddt_loss", "data": {"keys": list(all_lddt_dict.keys()), "const_out_types": const.out_types, "has_modified_in_const": "modified" in const.out_types, "has_modified_in_dict": "modified" in all_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+            try:
+                import json
+                debug_path = '/workspace/boltz/debug/debug.log'
+                with open(debug_path, 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "boltz1.py:693", "message": "all_lddt_dict keys after factored_lddt_loss", "data": {"keys": list(all_lddt_dict.keys()), "const_out_types": const.out_types, "has_modified_in_const": "modified" in const.out_types, "has_modified_in_dict": "modified" in all_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+            except (OSError, PermissionError, FileNotFoundError):
+                pass  # Silently skip debug logging if directory doesn't exist or can't write
             # #endregion
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
@@ -1117,9 +1121,13 @@ class Boltz1(LightningModule):
             best_complex_lddt_dict = all_lddt_dict
             best_complex_total_dict = all_total_dict
         # #region agent log
-        import json
-        with open('/workspace/boltz/debug/debug.log', 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "boltz1.py:734", "message": "best_lddt_dict keys before validation loop", "data": {"best_lddt_keys": list(best_lddt_dict.keys()), "const_out_types": const.out_types, "missing_keys": [k for k in const.out_types if k not in best_lddt_dict]}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+        try:
+            import json
+            debug_path = '/workspace/boltz/debug/debug.log'
+            with open(debug_path, 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "boltz1.py:734", "message": "best_lddt_dict keys before validation loop", "data": {"best_lddt_keys": list(best_lddt_dict.keys()), "const_out_types": const.out_types, "missing_keys": [k for k in const.out_types if k not in best_lddt_dict]}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+        except (OSError, PermissionError, FileNotFoundError):
+            pass  # Silently skip debug logging if directory doesn't exist or can't write
         # #endregion
 
         # Filtering based on confidence
@@ -1243,9 +1251,13 @@ class Boltz1(LightningModule):
 
         for m in const.out_types:
             # #region agent log
-            import json
-            with open('/workspace/boltz/debug/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if "disto_lddt_dict" in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+            try:
+                import json
+                debug_path = '/workspace/boltz/debug/debug.log'
+                with open(debug_path, 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "C", "location": "boltz1.py:856", "message": "Loop iteration for out_type", "data": {"current_type": m, "in_best_lddt_dict": m in best_lddt_dict, "in_disto_lddt_dict": m in disto_lddt_dict if "disto_lddt_dict" in locals() else None}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+            except (OSError, PermissionError, FileNotFoundError):
+                pass  # Silently skip debug logging if directory doesn't exist or can't write
             # #endregion
             # Skip "modified" as it's not computed by factored_lddt_loss
             if m == "modified":
@@ -1277,9 +1289,13 @@ class Boltz1(LightningModule):
                     )
             else:
                 # #region agent log
-                import json
-                with open('/workspace/boltz/debug/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                try:
+                    import json
+                    debug_path = '/workspace/boltz/debug/debug.log'
+                    with open(debug_path, 'a') as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "D", "location": "boltz1.py:882", "message": "Accessing best_lddt_dict in else branch", "data": {"type": m, "will_access": m in best_lddt_dict}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                except (OSError, PermissionError, FileNotFoundError):
+                    pass  # Silently skip debug logging if directory doesn't exist or can't write
                 # #endregion
                 self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
                 self.disto_lddt[m].update(disto_lddt_dict[m], disto_total_dict[m])
