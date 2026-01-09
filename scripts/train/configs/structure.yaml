@@ -178,6 +178,18 @@ model:
     use_energy_loss: true
     t_gen: 0.5
     energy_scale_override: 20.0
+    
+    # Energy loss kwargs (forwarded to BoltzEnergyLoss / nn_flow attn_loss_new)
+    energy_loss_kwargs:
+      R_list: [0.2, 0.5]
+      target_ratio: 4.0
+      n_sinkhorn_steps: 2
+      step_size: 1.0
+      has_repulsion: false
+      no_ratio: false
+    
+    # Use contrastive loss variant (attn_contra_loss) instead of attn_loss_new
+    energy_use_contra: false
 
   validation_args:
     recycling_steps: 1

@@ -37,7 +37,8 @@ from boltz.model.modules.trunk import (
 from boltz.model.modules.utils import ExponentialMovingAverage
 from boltz.model.optim.scheduler import AlphaFoldLRScheduler
 
-from boltz.energy.energy_loss import FeatureEnergyLoss
+from boltz.model.loss.energy_loss_boltz import BoltzEnergyLoss
+from boltz.utils.alignment import weighted_rigid_align_centered
 
 class Boltz1(LightningModule):
     """Boltz1 model."""
@@ -273,28 +274,32 @@ class Boltz1(LightningModule):
         self.use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
 
         if self.use_energy:
-            contra_dict = getattr(self.training_args, "energy_contra_dict", None)
-            if contra_dict is None:
-                # sane defaults; override in yaml
-                contra_dict = dict(
-                    kernel_type="attn_new",
-                    R_list=[0.2],
+            # Get energy loss kwargs from config
+            energy_loss_kwargs = getattr(self.training_args, "energy_loss_kwargs", None)
+            if energy_loss_kwargs is None:
+                # Default kwargs for BoltzEnergyLoss (nn_flow attn_loss_new)
+                energy_loss_kwargs = dict(
+                    R_list=[0.2, 0.5],
+                    target_ratio=4.0,
+                    n_sinkhorn_steps=2,
                     step_size=1.0,
-                    transpose_aff=False,
-                    n_sinkhorn_steps=0,
                     has_repulsion=False,
-                    exp_affinity=False,
                     no_ratio=False,
-                    proj_dim=0,
-                    # feature choices
-                    has_global=True,
-                    has_coord=False,
-                    local_ks=[],
-                    global_patches=[],
-                    triangle_local_ks=[],
                 )
-
-            self.energy_loss = FeatureEnergyLoss(contra_dict=contra_dict)
+            
+            # Get alignment function (can be overridden in config)
+            align_fn = getattr(self.training_args, "energy_align_fn", None)
+            if align_fn is None:
+                # Default to weighted Kabsch alignment
+                align_fn = weighted_rigid_align_centered
+            
+            use_contra = getattr(self.training_args, "energy_use_contra", False)
+            
+            self.energy_loss = BoltzEnergyLoss(
+                align_fn=align_fn,
+                use_contra=use_contra,
+                **energy_loss_kwargs,
+            )
         else:
             self.energy_loss = None
 
@@ -697,13 +702,51 @@ class Boltz1(LightningModule):
 
         loss = loss.mean()
 
-        # Optional: attach a couple useful scalars for logging
+        # Compute additional metrics for logging
         with torch.no_grad():
             info = dict(info) if isinstance(info, dict) else {}
-            info.setdefault("t_gen", t_gen)
-            info.setdefault("energy_scale_override", scale_override)
-            info["stats/avg_pred_coord_mag"] = torch.mean(torch.linalg.norm(pred_coords.reshape(-1, N, 3), dim=-1)).item()
-            info["stats/avg_true_coord_mag"] = torch.mean(torch.linalg.norm(target.reshape(-1, N, 3), dim=-1)).item()
+            
+            # Energy loss hyperparameters
+            info["hparams/t_gen"] = t_gen
+            info["hparams/energy_scale_override"] = scale_override
+            info["hparams/multiplicity"] = multiplicity
+            
+            # Coordinate statistics
+            pred_flat = pred_coords.reshape(-1, N, 3)
+            info["coords/avg_pred_magnitude"] = torch.mean(torch.linalg.norm(pred_flat, dim=-1)).item()
+            info["coords/avg_true_magnitude"] = torch.mean(torch.linalg.norm(target, dim=-1)).item()
+            info["coords/pred_std"] = pred_flat.std().item()
+            info["coords/true_std"] = target.std().item()
+            
+            # Per-sample RMSD (after alignment would be better, but this is a proxy)
+            # Expand target to match pred shape for RMSD calculation
+            target_exp = target.unsqueeze(1).expand(-1, multiplicity, -1, -1)  # [B, R, N, 3]
+            diff = pred_coords - target_exp  # [B, R, N, 3]
+            per_atom_dist = torch.sqrt((diff ** 2).sum(dim=-1))  # [B, R, N]
+            
+            # Mask out padded atoms
+            mask_exp = atom_pad_mask.unsqueeze(1).expand(-1, multiplicity, -1)  # [B, R, N]
+            masked_dist = per_atom_dist * mask_exp
+            n_valid = mask_exp.sum(dim=-1).clamp(min=1)  # [B, R]
+            
+            rmsd_per_sample = torch.sqrt((masked_dist ** 2).sum(dim=-1) / n_valid)  # [B, R]
+            info["rmsd/mean"] = rmsd_per_sample.mean().item()
+            info["rmsd/min"] = rmsd_per_sample.min().item()
+            info["rmsd/max"] = rmsd_per_sample.max().item()
+            info["rmsd/std"] = rmsd_per_sample.std().item()
+            
+            # Best sample per batch item
+            best_rmsd_per_batch = rmsd_per_sample.min(dim=1).values  # [B]
+            info["rmsd/best_per_batch_mean"] = best_rmsd_per_batch.mean().item()
+            
+            # Mean distance between pred and target atoms
+            info["coords/mean_atom_distance"] = masked_dist.sum() / mask_exp.sum()
+            
+            # Gradient flow check (should be non-zero for denoiser params)
+            if pred_coords.grad_fn is not None:
+                info["grad/pred_has_grad"] = 1.0
+            else:
+                info["grad/pred_has_grad"] = 0.0
 
         return loss, info
 
@@ -744,7 +787,6 @@ class Boltz1(LightningModule):
             use_energy = bool(getattr(self.training_args, "use_energy_loss", False))
 
             if use_energy:
-                print(f"[DEBUG] Using energy loss instead of diffusion loss.")
                 # >>> one-step generation + energy loss (replaces denoising loss)
                 try:
                     energy_loss, energy_info = self._energy_one_step_and_loss(
@@ -754,7 +796,11 @@ class Boltz1(LightningModule):
                         batch_idx=batch_idx,
                     )
                     diffusion_loss_dict = {"loss": energy_loss, "loss_breakdown": energy_info}
-                    print(f"[DEBUG] Energy loss: {energy_loss.item():.6f}, info: {energy_info}")
+                    
+                    # Log energy loss periodically (not every step to reduce noise)
+                    if batch_idx % 50 == 0:
+                        print(f"[Energy] step={batch_idx}, loss={energy_loss.item():.4f}, "
+                              f"rmsd_mean={energy_info.get('rmsd/mean', 'N/A'):.2f}")
                 except RuntimeError as e:
                     if "out of memory" in str(e).lower():
                         torch.cuda.empty_cache()
@@ -1630,6 +1676,33 @@ class Boltz1(LightningModule):
             )
         elif self.use_ema:
             self.ema.to(self.device)
+        
+        # Log energy loss configuration to W&B
+        if self.use_energy and self.energy_loss is not None:
+            energy_config = {
+                "energy_loss/enabled": True,
+                "energy_loss/use_contra": getattr(self.energy_loss, "use_contra", False),
+                "energy_loss/t_gen": getattr(self.training_args, "t_gen", 1.0),
+                "energy_loss/energy_scale_override": getattr(self.training_args, "energy_scale_override", None),
+            }
+            # Log loss_kwargs
+            loss_kwargs = getattr(self.energy_loss, "loss_kwargs", {})
+            for k, v in loss_kwargs.items():
+                if isinstance(v, (int, float, bool, str)):
+                    energy_config[f"energy_loss/{k}"] = v
+                elif isinstance(v, list):
+                    energy_config[f"energy_loss/{k}"] = str(v)
+            
+            # Log all config values
+            for k, v in energy_config.items():
+                self.log(k, v if isinstance(v, (int, float)) else 0.0, on_step=False, on_epoch=False)
+            
+            # Print config summary
+            print("\n" + "=" * 60)
+            print("Energy Loss Configuration:")
+            for k, v in energy_config.items():
+                print(f"  {k}: {v}")
+            print("=" * 60 + "\n")
 
     def on_train_epoch_start(self) -> None:
         if self.use_ema:
